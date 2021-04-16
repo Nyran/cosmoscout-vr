@@ -8,88 +8,9 @@
 
 namespace csp::atmospheres {
 
-const char* AtmosphereRenderer::cAtmosphereVert = R"(
-  #version 330
-
-  // inputs
-  layout(location = 0) in vec2 vPosition;
-
-  // uniforms
-  uniform mat4 uMatInvMV;
-  uniform mat4 uMatInvP;
-
-  // outputs
-  out VaryingStruct {
-    vec3 vRayDir;
-    vec3 vRayOrigin;
-    vec2 vTexcoords;
-  } vsOut;
-
-  void main() {
-    mat4 testInvMV = uMatInvMV;
-    testInvMV[3] = vec4(0, 0, 0, 1);
-
-    mat4 testInvMVP = testInvMV * uMatInvP;
-
-    // get camera position in model space
-    vsOut.vRayOrigin = uMatInvMV[3].xyz;
-
-    // get ray direction model space
-    vsOut.vRayDir = (testInvMVP * vec4(vPosition, 0, 1)).xyz;
-
-    // for lookups in the depth and color buffers
-    vsOut.vTexcoords = vPosition * 0.5 + 0.5;
-
-    // no tranformation here since we draw a full screen quad
-    gl_Position = vec4(vPosition, 0, 1);
-  }
-)";
-
 // needs to be splitted because MSVC doesn't like long strings
+/*
 const char* AtmosphereRenderer::cAtmosphereFrag0 = R"(
-  #version 330
-
-  // inputs
-  in VaryingStruct {
-    vec3 vRayDir;
-    vec3 vRayOrigin;
-    vec2 vTexcoords;
-  } vsIn;
-
-  // uniforms
-  #if HDR_SAMPLES > 0
-    uniform sampler2DMS uColorBuffer;
-    uniform sampler2DMS uDepthBuffer;
-  #else
-    uniform sampler2D uColorBuffer;
-    uniform sampler2D uDepthBuffer;
-  #endif
-
-  uniform sampler2D uCloudTexture;
-  uniform mat4      uMatInvMVP;
-  uniform mat4      uMatInvMV;
-  uniform mat4      uMatInvP;
-  uniform mat4      uMatMV;
-  uniform vec3      uSunDir;
-  uniform float     uSunIntensity;
-  uniform float     uWaterLevel;
-  uniform float     uCloudAltitude;
-  uniform float     uAmbientBrightness;
-  uniform float     uFarClip;
-
-  // shadow stuff
-  uniform sampler2DShadow uShadowMaps[5];
-  uniform mat4            uShadowProjectionViewMatrices[5];
-  uniform int             uShadowCascades;
-
-  // outputs
-  layout(location = 0) out vec3 oColor;
-
-  // constants
-  const float PI = 3.14159265359;
-  const vec3  BR = vec3(BETA_R_0,BETA_R_1,BETA_R_2);
-  const vec3  BM = vec3(BETA_M_0,BETA_M_1,BETA_M_2);
-
   // for a given cascade and view space position, returns the lookup coordinates
   // for the corresponding shadow map
   vec3 GetShadowMapCoords(int cascade, vec3 position) {
@@ -102,7 +23,7 @@ const char* AtmosphereRenderer::cAtmosphereFrag0 = R"(
     for (int i=0; i<uShadowCascades; ++i) {
       vec3 coords = GetShadowMapCoords(i, position);
 
-      if (coords.x > 0 && coords.x < 1 && 
+      if (coords.x > 0 && coords.x < 1 &&
           coords.y > 0 && coords.y < 1 &&
           coords.z > 0 && coords.z < 1)
       {
@@ -111,7 +32,7 @@ const char* AtmosphereRenderer::cAtmosphereFrag0 = R"(
     }
 
     return -1;
-  } 
+  }
 
   // returns the amount of shadowing going on at the given view space position
   float GetShadow(vec3 position) {
@@ -200,7 +121,6 @@ const char* AtmosphereRenderer::cAtmosphereFrag0 = R"(
   //     return texture(uTransmittanceTexture, vec2(u, v)).rgb;
   // }
 
-
   // returns the irradiance for the current pixel
   // This is based on the color buffer and the extinction of light.
   vec3 GetExtinction(vec3 vRayOrigin, vec3 vRayDir, float fTStart, float fTEnd) {
@@ -211,35 +131,15 @@ const char* AtmosphereRenderer::cAtmosphereFrag0 = R"(
     // significant performance gain, the code is kept here only for reference
     // vec3 entry = vRayOrigin + vRayDir*fTStart;
     // vec3 exit = vRayOrigin + vRayDir*fTEnd;
-    // vec3 extinctionZenith = clamp(GetExtinction(entry, vRayDir) / GetExtinction(exit, vRayDir), vec3(0), vec3(1));
-    // vec3 extinctionNadir = clamp(GetExtinction(exit, -vRayDir) / GetExtinction(entry, -vRayDir), vec3(0), vec3(1));
+    // vec3 extinctionZenith = clamp(GetExtinction(entry, vRayDir) / GetExtinction(exit,
+    vRayDir), vec3(0), vec3(1));
+    // vec3 extinctionNadir = clamp(GetExtinction(exit, -vRayDir) / GetExtinction(entry,
+    -vRayDir), vec3(0), vec3(1));
     // float angle = dot(normalize(vRayOrigin), vRayDir);
     // return mix(extinctionNadir, extinctionZenith, clamp((angle+0.01)/0.02, 0.0, 1.0));
   }
 
-  // compute intersections with the atmosphere
-  // two T parameters are returned -- if no intersection is found, the first will
-  // larger than the second
-  vec2 IntersectSphere(vec3 vRayOrigin, vec3 vRayDir, float fRadius) {
-    float b = dot(vRayOrigin, vRayDir);
-    float c = dot(vRayOrigin, vRayOrigin) - fRadius*fRadius;
-    float fDet = b * b - c;
 
-    if (fDet < 0.0) {
-      return vec2(10000, -10000);
-    }
-
-    fDet = sqrt(fDet);
-    return vec2(-b-fDet, -b+fDet);
-  }
-
-  vec2 IntersectAtmosphere(vec3 vRayOrigin, vec3 vRayDir) {
-    return IntersectSphere(vRayOrigin, vRayDir, 1.0);
-  }
-
-  vec2 IntersectPlanetsphere(vec3 vRayOrigin, vec3 vRayDir) {
-    return IntersectSphere(vRayOrigin, vRayDir, 1.0-HEIGHT_ATMO);
-  }
 
   vec2 GetLngLat(vec3 vPosition) {
     vec2 result = vec2(-2);
@@ -365,17 +265,13 @@ const char* AtmosphereRenderer::cAtmosphereFrag0 = R"(
     return color;
   }
 
-
-  )";
-
-// needs to be splitted because MSVC doesn't like long strings
-const char* AtmosphereRenderer::cAtmosphereFrag1 = R"(
   // Returns the depth at the current pixel. If multisampling is used, we take the minimum depth.
   float GetDepth() {
     #if HDR_SAMPLES > 0
       float depth = 1.0;
       for (int i = 0; i < HDR_SAMPLES; ++i) {
-        depth = min(depth, texelFetch(uDepthBuffer, ivec2(vsIn.vTexcoords * textureSize(uDepthBuffer)), i).r);
+        depth = min(depth, texelFetch(uDepthBuffer, ivec2(vsIn.vTexcoords *
+        textureSize(uDepthBuffer)), i).r);
       }
       return depth;
     #else
@@ -383,12 +279,13 @@ const char* AtmosphereRenderer::cAtmosphereFrag1 = R"(
     #endif
   }
 
-  // Returns the background color at the current pixel. If multisampling is used, we take the average color.
-  vec3 GetLandColor() {
+  // Returns the background color at the current pixel. If multisampling is used, we take the
+  average color. vec3 GetLandColor() {
     #if HDR_SAMPLES > 0
       vec3 color = vec3(0.0);
       for (int i = 0; i < HDR_SAMPLES; ++i) {
-        color += texelFetch(uColorBuffer, ivec2(vsIn.vTexcoords * textureSize(uColorBuffer)), i).rgb;
+        color += texelFetch(uColorBuffer, ivec2(vsIn.vTexcoords * textureSize(uColorBuffer)),
+        i).rgb;
       }
       return color / HDR_SAMPLES;
     #else
@@ -403,12 +300,11 @@ const char* AtmosphereRenderer::cAtmosphereFrag1 = R"(
                     float fTEnd, bool bHitsSurface, vec3 vLightDir) {
     // we do not always distribute samples evenly:
     //  - if we do hit the planet's surface, we sample evenly
-    //  - if the planet surface is not hit, the sampling density depends on 
+    //  - if the planet surface is not hit, the sampling density depends on
     //    start height, if we are close to the surface, we will  sample more
     //    at the beginning of the ray where there is more dense atmosphere
-    float fstartHeight = clamp((length(vRayOrigin + vRayDir * fTStart) - 1.0 + HEIGHT_ATMO)/HEIGHT_ATMO, 0.0, 1.0);
-    const float fMaxExponent = 3.0;
-    float fExponent = 1.0;
+    float fstartHeight = clamp((length(vRayOrigin + vRayDir * fTStart) - 1.0 +
+    HEIGHT_ATMO)/HEIGHT_ATMO, 0.0, 1.0); const float fMaxExponent = 3.0; float fExponent = 1.0;
 
     if (!bHitsSurface) {
       fExponent = (1.0 - fstartHeight) * (fMaxExponent - 1.0) + 1.0;
@@ -441,7 +337,7 @@ const char* AtmosphereRenderer::cAtmosphereFrag1 = R"(
 
       // With precomputed transmittance, this code should be used. As there is no
       // significant performance gain, the code is kept here only for reference
-      // vec3 vExtinction      = GetExtinction(vRayOrigin, vRayDir, fTStart, fTMid) * 
+      // vec3 vExtinction      = GetExtinction(vRayOrigin, vRayDir, fTStart, fTMid) *
       //                         GetExtinction(vPos, vLightDir, 0, fTSunExit);
 
       vec2 vDensity         = GetDensity(vPos);
@@ -482,7 +378,7 @@ const char* AtmosphereRenderer::cAtmosphereFrag1 = R"(
 
     #endif
   }
-  
+
   // crops the intersections to the view ray
   bool GetViewRay(vec2 vIntersections, float fOpaqueDepth, out vec2 vStartEnd) {
     if (vIntersections.x > vIntersections.y) {
@@ -519,10 +415,10 @@ const char* AtmosphereRenderer::cAtmosphereFrag1 = R"(
       vec4(0.2, 0.3, 0.4, 0.4),
       vec4(0.1, 0.2, 0.3, 0.8),
       vec4(0.03, 0.05, 0.1, 0.9)
-    ); 
+    );
 
     for (int i=0; i<4; ++i) {
-      if (v <= steps[i+1]) 
+      if (v <= steps[i+1])
       return mix(colors[i], colors[i+1], vec4(v - steps[i])/(steps[i+1]-steps[i]));
     }
   }
@@ -562,9 +458,9 @@ const char* AtmosphereRenderer::cAtmosphereFrag1 = R"(
       if (bHitsWater) {
         fOpaqueDepth = vStartEnd.x;
         return GetWaterColor(vRayOrigin, vRayDir, vStartEnd);
-      } 
+      }
     #endif
-    
+
     return GetLandColor();
   }
 
@@ -583,12 +479,13 @@ const char* AtmosphereRenderer::cAtmosphereFrag1 = R"(
     vec2 sunStartEnd = IntersectAtmosphere(surfacePoint, uSunDir);
 
     if (sunStartEnd.x < sunStartEnd.y && sunStartEnd.y > 0) {
-      vec3 sunExtinction = GetExtinction(surfacePoint, uSunDir, max(0, sunStartEnd.x), sunStartEnd.y);
-      
+      vec3 sunExtinction = GetExtinction(surfacePoint, uSunDir, max(0, sunStartEnd.x),
+      sunStartEnd.y);
+
       #if USE_CLOUDMAP
         // add cloud shadow to the surface color
-        float cloudShadow = 1.0 - GetCloudShadow(surfacePoint, uSunDir, max(0, sunStartEnd.x), sunStartEnd.y);
-        sunExtinction *= cloudShadow;
+        float cloudShadow = 1.0 - GetCloudShadow(surfacePoint, uSunDir, max(0, sunStartEnd.x),
+        sunStartEnd.y); sunExtinction *= cloudShadow;
       #endif
 
       oColor *= mix(sunExtinction, vec3(1), uAmbientBrightness);
@@ -621,7 +518,8 @@ const char* AtmosphereRenderer::cAtmosphereFrag1 = R"(
       #endif
 
       oColor *= GetExtinction(vsIn.vRayOrigin, vRayDir, vStartEnd.x, vStartEnd.y);
-      oColor += GetInscatter(vsIn.vRayOrigin, vRayDir, vStartEnd.x, vStartEnd.y, bHitsSurface, uSunDir);
+      oColor += GetInscatter(vsIn.vRayOrigin, vRayDir, vStartEnd.x, vStartEnd.y, bHitsSurface,
+uSunDir);
 
       // add clouds themselves
       #if USE_CLOUDMAP
@@ -653,4 +551,5 @@ const char* AtmosphereRenderer::cAtmosphereFrag1 = R"(
     #endif
   }
 )";
+*/
 } // namespace csp::atmospheres

@@ -44,6 +44,7 @@ class Plugin : public cs::core::PluginBase {
     cs::utils::DefaultProperty<bool>  mEnabled{true};
     cs::utils::DefaultProperty<int>   mQuality{7};
     cs::utils::DefaultProperty<float> mWaterLevel{0.F};
+    cs::utils::DefaultProperty<bool>  mEnableRefraction{false};
     cs::utils::DefaultProperty<bool>  mEnableClouds{true};
     cs::utils::DefaultProperty<bool>  mEnableLightShafts{false};
     cs::utils::DefaultProperty<bool>  mEnableWater{false};

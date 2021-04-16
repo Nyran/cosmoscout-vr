@@ -101,6 +101,10 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
   void  setRayleighAnisotropy(float dValue);
 
   /// If true, an artificial disc is drawn in the suns direction.
+  bool getEnableRefraction() const;
+  void setEnableRefraction(bool bEnable);
+
+  /// If true, an artificial disc is drawn in the suns direction.
   bool getDrawSun() const;
   void setDrawSun(bool bEnable);
 
@@ -159,6 +163,7 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
   std::unordered_map<VistaViewport*, GBufferData> mGBufferData;
 
   bool      mShaderDirty       = true;
+  bool      mEnableRefraction           = false;
   bool      mDrawSun           = true;
   bool      mDrawWater         = false;
   float     mWaterLevel        = 0.0F;
@@ -205,9 +210,8 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
     uint32_t modelViewMatrix                  = 0;
   } mUniforms;
 
-  static const char* cAtmosphereVert;
-  static const char* cAtmosphereFrag0;
-  static const char* cAtmosphereFrag1;
+  const char* cAtmosphereVert;
+  const char* cAtmosphereFrag;
 };
 
 } // namespace csp::atmospheres

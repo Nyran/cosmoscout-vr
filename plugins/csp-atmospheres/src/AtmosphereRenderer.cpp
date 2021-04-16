@@ -37,12 +37,216 @@ namespace csp::atmospheres {
 AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> settings)
     : mPluginSettings(std::move(settings)) {
 
+  cAtmosphereVert = R"(
+  #version 330
+
+  // inputs
+  layout(location = 0) in vec2 vPosition;
+
+  // uniforms
+  uniform mat4 uMatInvMV;
+  uniform mat4 uMatInvP;
+
+  // outputs
+  out VaryingStruct {
+    vec3 vRayDir;
+    vec3 vRayOrigin;
+    vec2 vTexcoords;
+  } vsOut;
+
+  void main() {
+    mat4 testInvMV = uMatInvMV;
+    testInvMV[3] = vec4(0, 0, 0, 1);
+
+    mat4 testInvMVP = testInvMV * uMatInvP;
+
+    // get camera position in model space
+    vsOut.vRayOrigin = uMatInvMV[3].xyz;
+
+    // get ray direction model space
+    vsOut.vRayDir = (testInvMVP * vec4(vPosition, 0, 1)).xyz;
+
+    // for lookups in the depth and color buffers
+    vsOut.vTexcoords = vPosition * 0.5 + 0.5;
+
+    // no tranformation here since we draw a full screen quad
+    gl_Position = vec4(vPosition, 0, 1);
+  }
+)";
+
+  cAtmosphereFrag = R"(
+  #version 330
+
+  // inputs
+  in VaryingStruct {
+    vec3 vRayDir;
+    vec3 vRayOrigin;
+    vec2 vTexcoords;
+  } vsIn;
+
+  // uniforms
+  #if HDR_SAMPLES > 0
+    uniform sampler2DMS uColorBuffer;
+    uniform sampler2DMS uDepthBuffer;
+  #else
+    uniform sampler2D uColorBuffer;
+    uniform sampler2D uDepthBuffer;
+  #endif
+
+  uniform sampler2D uCloudTexture;
+  uniform mat4      uMatInvMVP;
+  uniform mat4      uMatInvMV;
+  uniform mat4      uMatInvP;
+  uniform mat4      uMatMV;
+  uniform vec3      uSunDir;
+  uniform float     uSunIntensity;
+  uniform float     uWaterLevel;
+  uniform float     uCloudAltitude;
+  uniform float     uAmbientBrightness;
+  uniform float     uFarClip;
+
+  // shadow stuff
+  uniform sampler2DShadow uShadowMaps[5];
+  uniform mat4            uShadowProjectionViewMatrices[5];
+  uniform int             uShadowCascades;
+
+  // outputs
+  layout(location = 0) out vec3 oColor;
+
+  // constants
+  const float PI          = 3.14159265359;
+  const float STEP_LENGTH = 0.1 / PRIMARY_RAY_STEPS;
+  const int   MAX_SAMPLES = PRIMARY_RAY_STEPS * 10;
+  const vec3  BR          = vec3(BETA_R_0,BETA_R_1,BETA_R_2);
+  const vec3  BM          = vec3(BETA_M_0,BETA_M_1,BETA_M_2);
+
+  vec3 heat(float v) {
+    float value = 1.0-v;
+    return (0.5+0.5*smoothstep(0.0, 0.1, value))*vec3(
+          smoothstep(0.5, 0.3, value),
+        value < 0.3 ?
+          smoothstep(0.0, 0.3, value) :
+          smoothstep(1.0, 0.6, value),
+          smoothstep(0.4, 0.6, value)
+    );
+  }
+
+  // compute the density of the atmosphere for a given model space position
+  // returns the rayleigh density as x component and the mie density as Y
+  float GetDensity(vec3 vPos) {
+    float fHeight = max(0.0, length(vPos) - 1.0 + HEIGHT_ATMO) / HEIGHT_ATMO;
+    return exp(-fHeight * 10) * 1.2;
+  }
+
+  float GetRefractiveIndex(vec3 vPos) {
+    float density = GetDensity(vPos);
+
+    float highDensity = 0.00005448;
+    float lowDensity = 1.2;
+
+    float highIndex = 1.0;
+    float lowIndex = 1 + 6730 * 0.0003;
+
+    float alpha = (density-lowDensity) / (highDensity - lowDensity); 
+    return lowIndex + alpha * (highIndex - lowIndex);
+
+
+    //float fHeight = clamp((length(vPos) - 1.0 + HEIGHT_ATMO) / HEIGHT_ATMO, 0, 1);
+    //return 1 + 0.0003 * 6370 * (1-fHeight);
+
+  }
+
+  // compute intersections with the atmosphere
+  // two T parameters are returned -- if no intersection is found, the first will
+  // larger than the second
+  bool IntersectSphere(vec3 vRayOrigin, vec3 vRayDir, float fRadius, out float t1, out float t2) {
+    float b = dot(vRayOrigin, vRayDir);
+    float c = dot(vRayOrigin, vRayOrigin) - fRadius*fRadius;
+    float fDet = b * b - c;
+
+    // Ray does not actually hit the sphere.
+    if (fDet < 0.0) {
+      return false;
+    }
+
+    fDet = sqrt(fDet);
+
+    // Clamp t1 to ray origin.
+    t1 = max(0, -b - fDet);
+    
+    // This should ususally be > 0, else ...
+    t2 = -b + fDet;
+
+    // ... ray does not actually hit the sphere; exit is behind camera.
+    if (t2 < 0) {
+      return false;
+    }
+
+    return true;
+  }
+
+  bool IntersectAtmosphere(vec3 vRayOrigin, vec3 vRayDir, out float t1, out float t2) {
+    return IntersectSphere(vRayOrigin, vRayDir, 1.0, t1, t2);
+  }
+
+  bool IntersectPlanetsphere(vec3 vRayOrigin, vec3 vRayDir, out float t1, out float t2) {
+    return IntersectSphere(vRayOrigin, vRayDir, 1.0-HEIGHT_ATMO, t1, t2);
+  }
+
+  void main() {
+
+    vec3 vRayDir = normalize(vsIn.vRayDir);
+
+    // t1 and t2 are the distances from the ray origin to the intersections with the
+    // atmosphere boundary. If the origin is inside the atmosphere, t1 == 0.
+    float t1 = 0;
+    float t2 = 0;
+    if (!IntersectAtmosphere(vsIn.vRayOrigin, vRayDir, t1, t2)) {
+      discard;
+    }
+
+    vec3 vSamplePos = vsIn.vRayOrigin + t1*vRayDir;
+
+    int   samples  = 0;
+    float altitude2 = dot(vSamplePos, vSamplePos);
+    float refractiveIndex = GetRefractiveIndex(vSamplePos);
+    float surfaceHeight2 = pow(1.0-HEIGHT_ATMO, 2);
+    
+    while(++samples < MAX_SAMPLES && altitude2 <= 1.1 && altitude2 > surfaceHeight2) {
+      vSamplePos              += STEP_LENGTH * vRayDir;
+      altitude2                = dot(vSamplePos, vSamplePos);
+
+      #if ENABLE_REFRACTION
+        float newRefractiveIndex = GetRefractiveIndex(vSamplePos);
+        vec3 dn = -normalize(vSamplePos) * abs(refractiveIndex-newRefractiveIndex);
+        vRayDir = ((refractiveIndex * vRayDir) + dn * STEP_LENGTH);
+        vRayDir = normalize(vRayDir);
+        refractiveIndex = newRefractiveIndex;
+      #endif
+
+    }
+
+    oColor = heat(float(samples)/MAX_SAMPLES);
+
+
+    #if 1 //DRAW_SUN
+      float fSunAngle = max(0,dot(vRayDir, uSunDir));
+      if (fSunAngle > 0.99999) {
+        oColor = vec3(1);
+      }
+    #endif
+  }
+)";
+
   initData();
 
   // scene-wide settings -----------------------------------------------------
   mPluginSettings->mQuality.connectAndTouch([this](int val) { setPrimaryRaySteps(val); });
 
   mPluginSettings->mEnableWater.connectAndTouch([this](bool val) { setDrawWater(val); });
+
+  mPluginSettings->mEnableRefraction.connectAndTouch(
+      [this](bool val) { setEnableRefraction(val); });
 
   mPluginSettings->mEnableClouds.connectAndTouch([this](bool val) {
     if (mUseClouds != val) {
@@ -233,6 +437,19 @@ void AtmosphereRenderer::setRayleighAnisotropy(float dValue) {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+bool AtmosphereRenderer::getEnableRefraction() const {
+  return mEnableRefraction;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void AtmosphereRenderer::setEnableRefraction(bool bEnable) {
+  mEnableRefraction = bEnable;
+  mShaderDirty      = true;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 bool AtmosphereRenderer::getDrawSun() const {
   return mDrawSun;
 }
@@ -315,10 +532,8 @@ void AtmosphereRenderer::updateShader() {
   mAtmoShader = VistaGLSLShader();
 
   std::string sVert(cAtmosphereVert);
-  std::string sFrag(cAtmosphereFrag0);
-  sFrag.append(cAtmosphereFrag1);
+  std::string sFrag(cAtmosphereFrag);
 
-  cs::utils::replaceString(sFrag, "HEIGHT_ATMO", cs::utils::toString(mAtmosphereHeight));
   cs::utils::replaceString(sFrag, "ANISOTROPY_R", cs::utils::toString(mRayleighAnisotropy));
   cs::utils::replaceString(sFrag, "ANISOTROPY_M", cs::utils::toString(mMieAnisotropy));
   cs::utils::replaceString(sFrag, "HEIGHT_R", cs::utils::toString(mRayleighHeight));
@@ -335,6 +550,7 @@ void AtmosphereRenderer::updateShader() {
   cs::utils::replaceString(sFrag, "EXPOSURE", cs::utils::toString(mExposure));
   cs::utils::replaceString(sFrag, "GAMMA", cs::utils::toString(mGamma));
   cs::utils::replaceString(sFrag, "HEIGHT_ATMO", cs::utils::toString(mAtmosphereHeight));
+  cs::utils::replaceString(sFrag, "ENABLE_REFRACTION", std::to_string(mEnableRefraction));
   cs::utils::replaceString(sFrag, "USE_LINEARDEPTHBUFFER", std::to_string(mUseLinearDepthBuffer));
   cs::utils::replaceString(sFrag, "DRAW_SUN", std::to_string(mDrawSun));
   cs::utils::replaceString(sFrag, "DRAW_WATER", std::to_string(mDrawWater));

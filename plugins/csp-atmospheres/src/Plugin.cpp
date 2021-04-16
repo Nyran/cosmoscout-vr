@@ -76,6 +76,7 @@ void from_json(nlohmann::json const& j, Plugin::Settings& o) {
   cs::core::Settings::deserialize(j, "quality", o.mQuality);
   cs::core::Settings::deserialize(j, "waterLevel", o.mWaterLevel);
   cs::core::Settings::deserialize(j, "enableClouds", o.mEnableClouds);
+  cs::core::Settings::deserialize(j, "enableRefraction", o.mEnableRefraction);
   cs::core::Settings::deserialize(j, "enableLightShafts", o.mEnableLightShafts);
   cs::core::Settings::deserialize(j, "enableWater", o.mEnableWater);
 }
@@ -86,6 +87,7 @@ void to_json(nlohmann::json& j, Plugin::Settings const& o) {
   cs::core::Settings::serialize(j, "quality", o.mQuality);
   cs::core::Settings::serialize(j, "waterLevel", o.mWaterLevel);
   cs::core::Settings::serialize(j, "enableClouds", o.mEnableClouds);
+  cs::core::Settings::serialize(j, "enableRefraction", o.mEnableRefraction);
   cs::core::Settings::serialize(j, "enableLightShafts", o.mEnableLightShafts);
   cs::core::Settings::serialize(j, "enableWater", o.mEnableWater);
 }
@@ -109,6 +111,13 @@ void Plugin::init() {
       std::function([this](bool enable) { mPluginSettings->mEnableWater = enable; }));
   mPluginSettings->mEnableWater.connectAndTouch(
       [this](bool enable) { mGuiManager->setCheckboxValue("atmosphere.setEnableWater", enable); });
+
+  mGuiManager->getGui()->registerCallback("atmosphere.setEnableRefraction",
+      "Enables or disables refraction.",
+      std::function([this](bool enable) { mPluginSettings->mEnableRefraction = enable; }));
+  mPluginSettings->mEnableRefraction.connectAndTouch([this](bool enable) {
+    mGuiManager->setCheckboxValue("atmosphere.setEnableRefraction", enable);
+  });
 
   mGuiManager->getGui()->registerCallback("atmosphere.setEnableClouds",
       "Enables or disables rendering of a cloud layer.",
@@ -202,6 +211,7 @@ void Plugin::deInit() {
   mGuiManager->removeSettingsSection("Atmospheres");
 
   mGuiManager->getGui()->unregisterCallback("atmosphere.setEnableWater");
+  mGuiManager->getGui()->unregisterCallback("atmosphere.setEnableRefraction");
   mGuiManager->getGui()->unregisterCallback("atmosphere.setEnableClouds");
   mGuiManager->getGui()->unregisterCallback("atmosphere.setEnable");
   mGuiManager->getGui()->unregisterCallback("atmosphere.setEnableLightShafts");
