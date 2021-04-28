@@ -242,14 +242,17 @@ void Plugin::update() {
 
   for (auto const& atmosphere : mAtmospheres) {
     double sunIlluminance = 10.0;
+    double sunLuminance   = 1.0;
 
     if (mAllSettings->mGraphics.pEnableHDR.get()) {
       sunIlluminance = mSolarSystem->getSunIlluminance(atmosphere.second->getWorldTransform()[3]);
+      sunLuminance   = mSolarSystem->getSunLuminance();
     }
 
     auto sunDirection = mSolarSystem->getSunDirection(atmosphere.second->getWorldTransform()[3]);
 
-    atmosphere.second->getRenderer().setSun(sunDirection, static_cast<float>(sunIlluminance));
+    atmosphere.second->getRenderer().setSun(
+        sunDirection, static_cast<float>(sunIlluminance), static_cast<float>(sunLuminance));
   }
 }
 

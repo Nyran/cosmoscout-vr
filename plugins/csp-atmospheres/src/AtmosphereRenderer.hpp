@@ -36,7 +36,7 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
   explicit AtmosphereRenderer(std::shared_ptr<Plugin::Settings> settings);
 
   /// Updates the current sun position and brightness.
-  void setSun(glm::vec3 const& direction, float illuminance);
+  void setSun(glm::vec3 const& direction, float illuminance, float luminance);
 
   /// Set the planet's radii.
   void setRadii(glm::dvec3 const& radii);
@@ -163,7 +163,7 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
   std::unordered_map<VistaViewport*, GBufferData> mGBufferData;
 
   bool      mShaderDirty       = true;
-  bool      mEnableRefraction           = false;
+  bool      mEnableRefraction  = false;
   bool      mDrawSun           = true;
   bool      mDrawWater         = false;
   float     mWaterLevel        = 0.0F;
@@ -171,7 +171,8 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
   float     mAtmosphereHeight  = 1.0F;
   int       mPrimaryRaySteps   = 15;
   int       mSecondaryRaySteps = 4;
-  float     mSunIntensity      = 1.F;
+  float     mSunIlluminance    = 1.F;
+  float     mSunLuminance      = 1.F;
   glm::vec3 mSunDirection      = glm::vec3(1, 0, 0);
 
   float     mMieHeight     = 0.0F;
@@ -190,7 +191,8 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
   float mGamma                = 2.2F;
 
   struct {
-    uint32_t sunIntensity      = 0;
+    uint32_t sunIlluminance    = 0;
+    uint32_t sunLuminance      = 0;
     uint32_t sunDir            = 0;
     uint32_t farClip           = 0;
     uint32_t waterLevel        = 0;

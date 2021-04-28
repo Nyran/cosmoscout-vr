@@ -65,7 +65,7 @@ TEST_CASE("[graphical] csp::atmospheres::Atmosphere") {
   settings->mEnableClouds = false;
   AtmosphereRenderer atmosphere(settings);
 
-  atmosphere.setSun(glm::vec3(1, 0, 0), 15.0);
+  atmosphere.setSun(glm::vec3(1, 0, 0), 15.0, 1.0);
   atmosphere.setAtmosphereHeight(70.0 / 3460.0);
   atmosphere.setMieHeight(5.0 / 3460.0);
   atmosphere.setMieScattering(

@@ -5,6 +5,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include "Atmosphere.hpp"
+#include "logger.hpp"
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -99,7 +100,8 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
   uniform mat4      uMatInvP;
   uniform mat4      uMatMV;
   uniform vec3      uSunDir;
-  uniform float     uSunIntensity;
+  uniform float     uSunIlluminance;
+  uniform float     uSunLuminance;
   uniform float     uWaterLevel;
   uniform float     uCloudAltitude;
   uniform float     uAmbientBrightness;
@@ -133,27 +135,49 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
 
   // compute the density of the atmosphere for a given model space position
   // returns the rayleigh density as x component and the mie density as Y
-  float GetDensity(vec3 vPos) {
-    float fHeight = max(0.0, length(vPos) - 1.0 + HEIGHT_ATMO) / HEIGHT_ATMO;
-    return exp(-fHeight * 10) * 1.2;
+  vec3 GetDensity(vec3 vPos) {
+    float fHeight = max(0.0, length(vPos) - 1.0 + HEIGHT_ATMO);
+    return exp(vec3(-fHeight/(HEIGHT_ATMO*0.1), -fHeight/HEIGHT_R, -fHeight/HEIGHT_M)) * vec3(1.2, 1.0, 1.0);
+  }
+
+  // returns the optical depth between two points in model space
+  // The ray is defined by its origin and direction. The two points are defined
+  // by two T parameters along the ray. Two values are returned, the rayleigh
+  // depth and the mie depth.
+  vec2 GetOpticalDepth(vec3 vRayOrigin, vec3 vRayDir, float fTStart, float fTEnd) {
+    float fStep = (fTEnd - fTStart) / SECONDARY_RAY_STEPS;
+    vec2 vSum = vec2(0.0);
+
+    for (int i=0; i<SECONDARY_RAY_STEPS; i++) {
+      float fTCurr = fTStart + (i+0.5)*fStep;
+      vec3  vPos = vRayOrigin + vRayDir * fTCurr;
+      vSum += GetDensity(vPos).yz;
+    }
+
+    return vSum * fStep;
+  }
+
+  // calculates the extinction based on an optical depth
+  vec3 GetExtinction(vec2 vOpticalDepth) {
+    return exp(-BR*vOpticalDepth.x-BM*vOpticalDepth.y);
   }
 
   float GetRefractiveIndex(vec3 vPos) {
-    float density = GetDensity(vPos);
+    float density = GetDensity(vPos).x;
 
     float highDensity = 0.00005448;
     float lowDensity = 1.2;
 
     float highIndex = 1.0;
-    float lowIndex = 1 + 6730 * 0.0003;
+    float lowIndex = 1 + 0.0003;
 
     float alpha = (density-lowDensity) / (highDensity - lowDensity); 
     return lowIndex + alpha * (highIndex - lowIndex);
+  }
 
-
-    //float fHeight = clamp((length(vPos) - 1.0 + HEIGHT_ATMO) / HEIGHT_ATMO, 0, 1);
-    //return 1 + 0.0003 * 6370 * (1-fHeight);
-
+  vec3 GetRefractiveIndexGradient(vec3 pos, float dh) {
+    vec3 normal = normalize(pos);
+    return normal * (GetRefractiveIndex(pos + normal*dh*0.5)-GetRefractiveIndex(pos - normal*dh*0.5)) / dh;
   }
 
   // compute intersections with the atmosphere
@@ -193,6 +217,36 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     return IntersectSphere(vRayOrigin, vRayDir, 1.0-HEIGHT_ATMO, t1, t2);
   }
 
+  // returns the probability of scattering
+  // based on the cosine (c) between in and out direction and the anisotropy (g)
+  //
+  //            3 * (1 - g*g)               1 + c*c
+  // phase = -------------------- * -----------------------
+  //          8 * PI * (2 + g*g)     (1 + g*g - 2*g*c)^1.5
+  //
+  float GetPhase(float fCosine, float fAnisotropy) {
+    float fAnisotropy2 = fAnisotropy * fAnisotropy;
+    float fCosine2     = fCosine * fCosine;
+
+    float a = (1.0 - fAnisotropy2) * (1.0 + fCosine2);
+    float b =  1.0 + fAnisotropy2 - 2.0 * fAnisotropy * fCosine;
+
+    b *= sqrt(b);
+    b *= 2.0 + fAnisotropy2;
+
+    return 3.0/(8.0*PI) * a/b;
+  }
+
+  // very basic tone mapping
+  vec3 ToneMapping(vec3 color) {
+    #if ENABLE_TONEMAPPING
+      color = clamp(EXPOSURE * color, 0.0, 1.0);
+      color = pow(color, vec3(1.0 / GAMMA));
+    #endif
+
+    return color;
+  }
+
   void main() {
 
     vec3 vRayDir = normalize(vsIn.vRayDir);
@@ -206,35 +260,68 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     }
 
     vec3 vSamplePos = vsIn.vRayOrigin + t1*vRayDir;
+    oColor = vec3(0.0);
 
-    int   samples  = 0;
-    float altitude2 = dot(vSamplePos, vSamplePos);
-    float refractiveIndex = GetRefractiveIndex(vSamplePos);
-    float surfaceHeight2 = pow(1.0-HEIGHT_ATMO, 2);
+    int   samples          = 0;
+    float stepLength       = STEP_LENGTH;
+    float pathLength       = 0;
+    vec2  pathOpticalDepth = vec2(0.0);
+
+    bool  exitedAtmosphere = false;
+    bool  hitPlanet        = false;
     
-    while(++samples < MAX_SAMPLES && altitude2 <= 1.1 && altitude2 > surfaceHeight2) {
-      vSamplePos              += STEP_LENGTH * vRayDir;
-      altitude2                = dot(vSamplePos, vSamplePos);
+    while(++samples < MAX_SAMPLES && !exitedAtmosphere && !hitPlanet) {
+
+      // First check whether this step will exit the atmosphere.
+      if (IntersectAtmosphere(vSamplePos, vRayDir, t1, t2) && t2 < stepLength) {
+        stepLength = t2;
+        exitedAtmosphere = true;
+      }
+
+      // Then check whether we hit the planet.
+      if (IntersectPlanetsphere(vSamplePos, vRayDir, t1, t2) && t1 < stepLength) {
+        stepLength = t1;
+        hitPlanet = true;
+      }
+
+      pathOpticalDepth += GetOpticalDepth(vSamplePos, vRayDir, 0, stepLength);
+
+      vSamplePos += stepLength * vRayDir;
+      pathLength += stepLength;
+
+      if (!IntersectPlanetsphere(vSamplePos, uSunDir, t1, t2)) {
+        IntersectAtmosphere(vSamplePos, uSunDir, t1, t2);
+        vec2 vOpticalDepthToSun = GetOpticalDepth(vSamplePos, uSunDir, 0, t2);
+        vec3 vExtinction = GetExtinction(vOpticalDepthToSun+pathOpticalDepth);
+
+        float fCosine    = dot(vRayDir, uSunDir);
+        vec2 vDensity    = GetDensity(vSamplePos).yz;
+
+        oColor += stepLength * vExtinction * uSunIlluminance *
+                  (vDensity.x * BR * GetPhase(fCosine, ANISOTROPY_R) + 
+                   vDensity.y * BM * GetPhase(fCosine, ANISOTROPY_M));
+      }
 
       #if ENABLE_REFRACTION
-        float newRefractiveIndex = GetRefractiveIndex(vSamplePos);
-        vec3 dn = -normalize(vSamplePos) * abs(refractiveIndex-newRefractiveIndex);
-        vRayDir = ((refractiveIndex * vRayDir) + dn * STEP_LENGTH);
+        float refractiveIndex = GetRefractiveIndex(vSamplePos);
+        vec3 dn = GetRefractiveIndexGradient(vSamplePos, stepLength*0.01);
+        vRayDir = ((refractiveIndex * vRayDir) + dn * stepLength);
         vRayDir = normalize(vRayDir);
-        refractiveIndex = newRefractiveIndex;
       #endif
-
     }
 
-    oColor = heat(float(samples)/MAX_SAMPLES);
+    //oColor = heat(float(samples)/MAX_SAMPLES);
+    //oColor = heat(pathLength);
 
 
     #if 1 //DRAW_SUN
       float fSunAngle = max(0,dot(vRayDir, uSunDir));
-      if (fSunAngle > 0.99999) {
-        oColor = vec3(1);
+      if (!hitPlanet && fSunAngle > 0.99999) {
+        oColor += vec3(uSunLuminance) * GetExtinction(pathOpticalDepth);
       }
     #endif
+
+    oColor = ToneMapping(oColor);
   }
 )";
 
@@ -260,9 +347,10 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void AtmosphereRenderer::setSun(glm::vec3 const& direction, float illuminance) {
-  mSunIntensity = illuminance;
-  mSunDirection = direction;
+void AtmosphereRenderer::setSun(glm::vec3 const& direction, float illuminance, float luminance) {
+  mSunIlluminance = illuminance;
+  mSunLuminance   = luminance;
+  mSunDirection   = direction;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -565,7 +653,8 @@ void AtmosphereRenderer::updateShader() {
 
   mAtmoShader.Link();
 
-  mUniforms.sunIntensity      = mAtmoShader.GetUniformLocation("uSunIntensity");
+  mUniforms.sunIlluminance    = mAtmoShader.GetUniformLocation("uSunIlluminance");
+  mUniforms.sunLuminance      = mAtmoShader.GetUniformLocation("uSunLuminance");
   mUniforms.sunDir            = mAtmoShader.GetUniformLocation("uSunDir");
   mUniforms.farClip           = mAtmoShader.GetUniformLocation("uFarClip");
   mUniforms.waterLevel        = mAtmoShader.GetUniformLocation("uWaterLevel");
@@ -646,7 +735,8 @@ bool AtmosphereRenderer::Do() {
   // set uniforms ------------------------------------------------------------
   mAtmoShader.Bind();
 
-  mAtmoShader.SetUniform(mUniforms.sunIntensity, mSunIntensity);
+  mAtmoShader.SetUniform(mUniforms.sunIlluminance, mSunIlluminance);
+  mAtmoShader.SetUniform(mUniforms.sunLuminance, mSunLuminance);
   mAtmoShader.SetUniform(mUniforms.sunDir, sunDir[0], sunDir[1], sunDir[2]);
   mAtmoShader.SetUniform(mUniforms.farClip, cs::utils::getCurrentFarClipDistance());
 
