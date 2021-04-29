@@ -45,6 +45,7 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
   layout(location = 0) in vec2 vPosition;
 
   // uniforms
+  uniform mat4 uMatInvMVP;
   uniform mat4 uMatInvMV;
   uniform mat4 uMatInvP;
 
@@ -56,15 +57,17 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
   } vsOut;
 
   void main() {
-    mat4 testInvMV = uMatInvMV;
-    testInvMV[3] = vec4(0, 0, 0, 1);
-
-    mat4 testInvMVP = testInvMV * uMatInvP;
-
     // get camera position in model space
     vsOut.vRayOrigin = uMatInvMV[3].xyz;
 
     // get ray direction model space
+    // vec4 tmp = uMatInvMVP * vec4(vPosition, 1, 1);
+    // tmp /= tmp.w;
+    // vsOut.vRayDir = tmp.xyz - vsOut.vRayOrigin;
+    
+    mat4 testInvMV = uMatInvMV;
+    testInvMV[3] = vec4(0, 0, 0, 1);
+    mat4 testInvMVP = testInvMV * uMatInvP;
     vsOut.vRayDir = (testInvMVP * vec4(vPosition, 0, 1)).xyz;
 
     // for lookups in the depth and color buffers
@@ -95,6 +98,7 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
   #endif
 
   uniform sampler2D uCloudTexture;
+  uniform mat4      uMatMVP;
   uniform mat4      uMatInvMVP;
   uniform mat4      uMatInvMV;
   uniform mat4      uMatInvP;
@@ -247,6 +251,20 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     return color;
   }
 
+  // Returns the background color at the current pixel. If multisampling is used, we take the
+  // average color.
+  vec3 GetBackgroundColor(vec2 texcoords) {
+    #if HDR_SAMPLES > 0
+      vec3 color = vec3(0.0);
+      for (int i = 0; i < HDR_SAMPLES; ++i) {
+        color += texelFetch(uColorBuffer, ivec2(texcoords * textureSize(uColorBuffer)), i).rgb;
+      }
+      return color / HDR_SAMPLES;
+    #else
+      return texture(uColorBuffer, texcoords).rgb;
+    #endif
+  }
+
   void main() {
 
     vec3 vRayDir = normalize(vsIn.vRayDir);
@@ -259,7 +277,8 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
       discard;
     }
 
-    vec3 vSamplePos = vsIn.vRayOrigin + t1*vRayDir;
+    vec3 vStart = vsIn.vRayOrigin + t1*vRayDir;
+    vec3 vSamplePos = vStart;
     oColor = vec3(0.0);
 
     int   samples          = 0;
@@ -286,21 +305,25 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
 
       pathOpticalDepth += GetOpticalDepth(vSamplePos, vRayDir, 0, stepLength);
 
-      vSamplePos += stepLength * vRayDir;
-      pathLength += stepLength;
+      vec3 stepCenter = vSamplePos + 0.5 * stepLength * vRayDir;
 
-      if (!IntersectPlanetsphere(vSamplePos, uSunDir, t1, t2)) {
-        IntersectAtmosphere(vSamplePos, uSunDir, t1, t2);
-        vec2 vOpticalDepthToSun = GetOpticalDepth(vSamplePos, uSunDir, 0, t2);
+      if (!IntersectPlanetsphere(stepCenter, uSunDir, t1, t2)) {
+        IntersectAtmosphere(stepCenter, uSunDir, t1, t2);
+        vec2 vOpticalDepthToSun = GetOpticalDepth(stepCenter, uSunDir, 0, t2);
         vec3 vExtinction = GetExtinction(vOpticalDepthToSun+pathOpticalDepth);
 
         float fCosine    = dot(vRayDir, uSunDir);
-        vec2 vDensity    = GetDensity(vSamplePos).yz;
+        vec2 vDensity    = GetDensity(stepCenter).yz;
 
         oColor += stepLength * vExtinction * uSunIlluminance *
                   (vDensity.x * BR * GetPhase(fCosine, ANISOTROPY_R) + 
                    vDensity.y * BM * GetPhase(fCosine, ANISOTROPY_M));
       }
+
+      vSamplePos = samples * stepLength * vRayDir + vStart;
+
+      // vSamplePos += stepLength * vRayDir;
+      pathLength += stepLength;
 
       #if ENABLE_REFRACTION
         float refractiveIndex = GetRefractiveIndex(vSamplePos);
@@ -310,18 +333,26 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
       #endif
     }
 
-    //oColor = heat(float(samples)/MAX_SAMPLES);
-    //oColor = heat(pathLength);
+    
+
+    vec3 pathExtinction = GetExtinction(pathOpticalDepth);
 
 
     #if 1 //DRAW_SUN
       float fSunAngle = max(0,dot(vRayDir, uSunDir));
       if (!hitPlanet && fSunAngle > 0.99999) {
-        oColor += vec3(uSunLuminance) * GetExtinction(pathOpticalDepth);
+        oColor += vec3(uSunLuminance) * pathExtinction;
       }
     #endif
 
+    vec4 sampleCoords = uMatMVP * vec4(vSamplePos, 1.0);
+    sampleCoords /= sampleCoords.w;
+    oColor += GetBackgroundColor(sampleCoords.xy * 0.5 + 0.5) * pathExtinction;
+
     oColor = ToneMapping(oColor);
+
+    //oColor += 0.5*heat(float(samples)/MAX_SAMPLES);
+    oColor += 0.5*heat(pathLength);
   }
 )";
 
@@ -672,6 +703,7 @@ void AtmosphereRenderer::updateShader() {
         ("uShadowProjectionViewMatrices[" + std::to_string(i) + "]").c_str());
   }
 
+  mUniforms.modelViewProjectionMatrix        = mAtmoShader.GetUniformLocation("uMatMVP");
   mUniforms.inverseModelViewMatrix           = mAtmoShader.GetUniformLocation("uMatInvMV");
   mUniforms.inverseModelViewProjectionMatrix = mAtmoShader.GetUniformLocation("uMatInvMVP");
   mUniforms.inverseProjectionMatrix          = mAtmoShader.GetUniformLocation("uMatInvP");
@@ -726,8 +758,9 @@ bool AtmosphereRenderer::Do() {
 
   std::array<GLfloat, 16> glMatP{};
   glGetFloatv(GL_PROJECTION_MATRIX, glMatP.data());
-  glm::mat4 matInvP = glm::inverse(glm::make_mat4x4(glMatP.data()));
-  glm::mat4 matInvMVP(matInvMV * matInvP);
+  glm::mat4 matMVP    = glm::make_mat4x4(glMatP.data()) * matMV;
+  glm::mat4 matInvP   = glm::inverse(glm::make_mat4x4(glMatP.data()));
+  glm::mat4 matInvMVP = glm::inverse(matMVP);
 
   glm::vec3 sunDir =
       glm::normalize(glm::vec3(glm::inverse(mWorldTransform) * glm::vec4(mSunDirection, 0)));
@@ -779,6 +812,7 @@ bool AtmosphereRenderer::Do() {
   }
 
   // Why is there no set uniform for matrices???
+  glUniformMatrix4fv(mUniforms.modelViewProjectionMatrix, 1, GL_FALSE, glm::value_ptr(matMVP));
   glUniformMatrix4fv(mUniforms.inverseModelViewMatrix, 1, GL_FALSE, glm::value_ptr(matInvMV));
   glUniformMatrix4fv(
       mUniforms.inverseModelViewProjectionMatrix, 1, GL_FALSE, glm::value_ptr(matInvMVP));
