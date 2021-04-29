@@ -164,9 +164,6 @@ void Plugin::init() {
 
   mEnableHDRConnection = mAllSettings->mGraphics.pEnableHDR.connect([this](bool val) {
     for (auto const& atmosphere : mAtmospheres) {
-      float const exposure = 0.6F;
-      float const gamma    = 2.2F;
-      atmosphere.second->getRenderer().setUseToneMapping(!val, exposure, gamma);
       if (val) {
         atmosphere.second->getRenderer().setHDRBuffer(mGraphicsEngine->getHDRBuffer());
       } else {

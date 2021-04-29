@@ -45,7 +45,6 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
   layout(location = 0) in vec2 vPosition;
 
   // uniforms
-  uniform mat4 uMatInvMVP;
   uniform mat4 uMatInvMV;
   uniform mat4 uMatInvP;
 
@@ -61,10 +60,6 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     vsOut.vRayOrigin = uMatInvMV[3].xyz;
 
     // get ray direction model space
-    // vec4 tmp = uMatInvMVP * vec4(vPosition, 1, 1);
-    // tmp /= tmp.w;
-    // vsOut.vRayDir = tmp.xyz - vsOut.vRayOrigin;
-    
     mat4 testInvMV = uMatInvMV;
     testInvMV[3] = vec4(0, 0, 0, 1);
     mat4 testInvMVP = testInvMV * uMatInvP;
@@ -99,7 +94,6 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
 
   uniform sampler2D uCloudTexture;
   uniform mat4      uMatMVP;
-  uniform mat4      uMatInvMVP;
   uniform mat4      uMatInvMV;
   uniform mat4      uMatInvP;
   uniform mat4      uMatMV;
@@ -241,16 +235,6 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     return 3.0/(8.0*PI) * a/b;
   }
 
-  // very basic tone mapping
-  vec3 ToneMapping(vec3 color) {
-    #if ENABLE_TONEMAPPING
-      color = clamp(EXPOSURE * color, 0.0, 1.0);
-      color = pow(color, vec3(1.0 / GAMMA));
-    #endif
-
-    return color;
-  }
-
   // Returns the background color at the current pixel. If multisampling is used, we take the
   // average color.
   vec3 GetBackgroundColor(vec2 texcoords) {
@@ -265,6 +249,20 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     #endif
   }
 
+  // Returns the depth at the current pixel. If multisampling is used, we take the minimum depth.
+  float GetDepth(vec2 texcoords) {
+    #if HDR_SAMPLES > 0
+      float depth = 1.0;
+      for (int i = 0; i < HDR_SAMPLES; ++i) {
+        depth = min(depth, texelFetch(uDepthBuffer, ivec2(texcoords *
+        textureSize(uDepthBuffer)), i).r);
+      }
+      return depth;
+    #else
+      return texture(uDepthBuffer, texcoords).r;
+    #endif
+  }
+
   void main() {
 
     vec3 vRayDir = normalize(vsIn.vRayDir);
@@ -274,15 +272,15 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     float t1 = 0;
     float t2 = 0;
     if (!IntersectAtmosphere(vsIn.vRayOrigin, vRayDir, t1, t2)) {
-      discard;
+      oColor = GetBackgroundColor(vsIn.vTexcoords);
+      return;
     }
 
-    vec3 vStart = vsIn.vRayOrigin + t1*vRayDir;
-    vec3 vSamplePos = vStart;
+    vec3 vSamplePos = vsIn.vRayOrigin + t1*vRayDir;
     oColor = vec3(0.0);
 
     int   samples          = 0;
-    float stepLength       = STEP_LENGTH;
+    
     float pathLength       = 0;
     vec2  pathOpticalDepth = vec2(0.0);
 
@@ -290,6 +288,13 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     bool  hitPlanet        = false;
     
     while(++samples < MAX_SAMPLES && !exitedAtmosphere && !hitPlanet) {
+
+      // Decrease step length to ensure a maximum density change per step.
+      float stepLength = STEP_LENGTH;
+      const float maxDensityChange = 0.1;
+      while (abs(GetDensity(vSamplePos).x - GetDensity(vSamplePos+vRayDir*stepLength).x) > maxDensityChange) {
+        stepLength /= 2;
+      }
 
       // First check whether this step will exit the atmosphere.
       if (IntersectAtmosphere(vSamplePos, vRayDir, t1, t2) && t2 < stepLength) {
@@ -320,39 +325,55 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
                    vDensity.y * BM * GetPhase(fCosine, ANISOTROPY_M));
       }
 
-      vSamplePos = samples * stepLength * vRayDir + vStart;
-
-      // vSamplePos += stepLength * vRayDir;
+      vSamplePos += stepLength * vRayDir;
       pathLength += stepLength;
 
       #if ENABLE_REFRACTION
         float refractiveIndex = GetRefractiveIndex(vSamplePos);
-        vec3 dn = GetRefractiveIndexGradient(vSamplePos, stepLength*0.01);
-        vRayDir = ((refractiveIndex * vRayDir) + dn * stepLength);
-        vRayDir = normalize(vRayDir);
+        vec3 dn = GetRefractiveIndexGradient(vSamplePos, STEP_LENGTH*0.1);
+        vRayDir = normalize(refractiveIndex * vRayDir + dn * stepLength);
       #endif
     }
 
-    
+    // Now we compute the look-up position in depth and color buffer. If the refracted ray hit the
+    // planet, we project the final vSamplePos to screen space. If it did not hit the planet, we
+    // assume that it continues until infinity.
+    vec4 sampleCoords;
+    if (hitPlanet) {
+      sampleCoords = uMatMVP * vec4(vSamplePos, 1.0);
+    } else {
+      sampleCoords = uMatMVP * vec4(vRayDir, 0.0);
+    }
+    sampleCoords.xy = sampleCoords.xy / sampleCoords.w * 0.5 + 0.5;
 
-    vec3 pathExtinction = GetExtinction(pathOpticalDepth);
+    vec3 backgroundColor = GetBackgroundColor(sampleCoords.xy);
 
-
-    #if 1 //DRAW_SUN
-      float fSunAngle = max(0,dot(vRayDir, uSunDir));
-      if (!hitPlanet && fSunAngle > 0.99999) {
-        oColor += vec3(uSunLuminance) * pathExtinction;
+    // If refraction is enabled, we can look a little bit 'behind' the horizon. We can identify this
+    // area by consulting the depth buffer: If our ray did not hit the planet, but there is
+    // something at sampleCoords, we are actually behind the planet. We will use just black as the
+    // background color and draw an artificial sun.
+    #if ENABLE_REFRACTION
+      if (!hitPlanet && GetDepth(sampleCoords.xy) < 1) {
+        float fSunAngle = max(0,dot(vRayDir, uSunDir));
+        backgroundColor = vec3(fSunAngle > 0.99999 ? uSunLuminance : 0);
       }
     #endif
 
-    vec4 sampleCoords = uMatMVP * vec4(vSamplePos, 1.0);
-    sampleCoords /= sampleCoords.w;
-    oColor += GetBackgroundColor(sampleCoords.xy * 0.5 + 0.5) * pathExtinction;
+    // This is the color extinction for the entire light path through the atmosphere. We will use
+    // this to attenuate the color buffer and the direct sun light.
+    backgroundColor *= GetExtinction(pathOpticalDepth);
 
-    oColor = ToneMapping(oColor);
+    #if !ENABLE_HDR
+      const float exposure = 0.6;
+      const float gamma    = 2.2;
+      oColor = clamp(exposure * oColor, 0.0, 1.0);
+      oColor = pow(oColor, vec3(1.0 / gamma));
+    #endif
+
+    oColor += backgroundColor;
 
     //oColor += 0.5*heat(float(samples)/MAX_SAMPLES);
-    oColor += 0.5*heat(pathLength);
+    //oColor += 0.5*heat(pathLength);
   }
 )";
 
@@ -569,19 +590,6 @@ void AtmosphereRenderer::setEnableRefraction(bool bEnable) {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-bool AtmosphereRenderer::getDrawSun() const {
-  return mDrawSun;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void AtmosphereRenderer::setDrawSun(bool bEnable) {
-  mDrawSun     = bEnable;
-  mShaderDirty = true;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
 bool AtmosphereRenderer::getDrawWater() const {
   return mDrawWater;
 }
@@ -619,34 +627,6 @@ void AtmosphereRenderer::setAmbientBrightness(float fValue) {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-bool AtmosphereRenderer::getUseToneMapping() const {
-  return mUseToneMapping;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void AtmosphereRenderer::setUseToneMapping(bool bEnable, float fExposure, float fGamma) {
-  mUseToneMapping = bEnable;
-  mExposure       = fExposure;
-  mGamma          = fGamma;
-  mShaderDirty    = true;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-bool AtmosphereRenderer::getUseLinearDepthBuffer() const {
-  return mUseLinearDepthBuffer;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void AtmosphereRenderer::setUseLinearDepthBuffer(bool bEnable) {
-  mUseLinearDepthBuffer = bEnable;
-  mShaderDirty          = true;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
 void AtmosphereRenderer::updateShader() {
   mAtmoShader = VistaGLSLShader();
 
@@ -665,13 +645,8 @@ void AtmosphereRenderer::updateShader() {
   cs::utils::replaceString(sFrag, "BETA_M_2", cs::utils::toString(mMieScattering[2]));
   cs::utils::replaceString(sFrag, "PRIMARY_RAY_STEPS", cs::utils::toString(mPrimaryRaySteps));
   cs::utils::replaceString(sFrag, "SECONDARY_RAY_STEPS", cs::utils::toString(mSecondaryRaySteps));
-  cs::utils::replaceString(sFrag, "ENABLE_TONEMAPPING", std::to_string(mUseToneMapping));
-  cs::utils::replaceString(sFrag, "EXPOSURE", cs::utils::toString(mExposure));
-  cs::utils::replaceString(sFrag, "GAMMA", cs::utils::toString(mGamma));
   cs::utils::replaceString(sFrag, "HEIGHT_ATMO", cs::utils::toString(mAtmosphereHeight));
   cs::utils::replaceString(sFrag, "ENABLE_REFRACTION", std::to_string(mEnableRefraction));
-  cs::utils::replaceString(sFrag, "USE_LINEARDEPTHBUFFER", std::to_string(mUseLinearDepthBuffer));
-  cs::utils::replaceString(sFrag, "DRAW_SUN", std::to_string(mDrawSun));
   cs::utils::replaceString(sFrag, "DRAW_WATER", std::to_string(mDrawWater));
   cs::utils::replaceString(sFrag, "USE_SHADOWMAP", std::to_string(mShadowMap != nullptr));
   cs::utils::replaceString(sFrag, "USE_CLOUDMAP", std::to_string(mUseClouds && mCloudTexture));
@@ -703,11 +678,10 @@ void AtmosphereRenderer::updateShader() {
         ("uShadowProjectionViewMatrices[" + std::to_string(i) + "]").c_str());
   }
 
-  mUniforms.modelViewProjectionMatrix        = mAtmoShader.GetUniformLocation("uMatMVP");
-  mUniforms.inverseModelViewMatrix           = mAtmoShader.GetUniformLocation("uMatInvMV");
-  mUniforms.inverseModelViewProjectionMatrix = mAtmoShader.GetUniformLocation("uMatInvMVP");
-  mUniforms.inverseProjectionMatrix          = mAtmoShader.GetUniformLocation("uMatInvP");
-  mUniforms.modelViewMatrix                  = mAtmoShader.GetUniformLocation("uMatMV");
+  mUniforms.modelViewProjectionMatrix = mAtmoShader.GetUniformLocation("uMatMVP");
+  mUniforms.inverseModelViewMatrix    = mAtmoShader.GetUniformLocation("uMatInvMV");
+  mUniforms.inverseProjectionMatrix   = mAtmoShader.GetUniformLocation("uMatInvP");
+  mUniforms.modelViewMatrix           = mAtmoShader.GetUniformLocation("uMatMV");
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -814,8 +788,6 @@ bool AtmosphereRenderer::Do() {
   // Why is there no set uniform for matrices???
   glUniformMatrix4fv(mUniforms.modelViewProjectionMatrix, 1, GL_FALSE, glm::value_ptr(matMVP));
   glUniformMatrix4fv(mUniforms.inverseModelViewMatrix, 1, GL_FALSE, glm::value_ptr(matInvMV));
-  glUniformMatrix4fv(
-      mUniforms.inverseModelViewProjectionMatrix, 1, GL_FALSE, glm::value_ptr(matInvMVP));
   glUniformMatrix4fv(mUniforms.inverseProjectionMatrix, 1, GL_FALSE, glm::value_ptr(matInvP));
   glUniformMatrix4fv(mUniforms.modelViewMatrix, 1, GL_FALSE, glm::value_ptr(matMV));
 

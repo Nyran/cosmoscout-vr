@@ -104,10 +104,6 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
   bool getEnableRefraction() const;
   void setEnableRefraction(bool bEnable);
 
-  /// If true, an artificial disc is drawn in the suns direction.
-  bool getDrawSun() const;
-  void setDrawSun(bool bEnable);
-
   /// If true, a ocean is drawn at water level.
   bool getDrawWater() const;
   void setDrawWater(bool bEnable);
@@ -123,15 +119,6 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
   /// incoming light.
   float getAmbientBrightness() const;
   void  setAmbientBrightness(float fValue);
-
-  /// If true, tonemapping is performed on the atmospheric color.
-  bool getUseToneMapping() const;
-  void setUseToneMapping(bool bEnable, float fExposure, float fGamma);
-
-  /// If true, the depth buffer is assumed to contain linear depth values. This significantly
-  /// reduces artifacts for large scenes.
-  bool getUseLinearDepthBuffer() const;
-  void setUseLinearDepthBuffer(bool bEnable);
 
   bool Do() override;
   bool GetBoundingBox(VistaBoundingBox& bb) override;
@@ -164,7 +151,6 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
 
   bool      mShaderDirty       = true;
   bool      mEnableRefraction  = false;
-  bool      mDrawSun           = true;
   bool      mDrawWater         = false;
   float     mWaterLevel        = 0.0F;
   float     mAmbientBrightness = 0.2F;
@@ -185,11 +171,6 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
 
   float mApproximateBrightness = 0.0F;
 
-  bool  mUseLinearDepthBuffer = false;
-  bool  mUseToneMapping       = true;
-  float mExposure             = 0.6F;
-  float mGamma                = 2.2F;
-
   struct {
     uint32_t sunIlluminance    = 0;
     uint32_t sunLuminance      = 0;
@@ -206,11 +187,10 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
     std::array<uint32_t, 5> shadowMaps{};
     std::array<uint32_t, 5> shadowProjectionMatrices{};
 
-    uint32_t modelViewProjectionMatrix        = 0;
-    uint32_t inverseModelViewMatrix           = 0;
-    uint32_t inverseModelViewProjectionMatrix = 0;
-    uint32_t inverseProjectionMatrix          = 0;
-    uint32_t modelViewMatrix                  = 0;
+    uint32_t modelViewProjectionMatrix = 0;
+    uint32_t inverseModelViewMatrix    = 0;
+    uint32_t inverseProjectionMatrix   = 0;
+    uint32_t modelViewMatrix           = 0;
   } mUniforms;
 
   const char* cAtmosphereVert;

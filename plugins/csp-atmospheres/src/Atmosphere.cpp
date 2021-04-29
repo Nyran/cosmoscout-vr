@@ -28,8 +28,6 @@ Atmosphere::Atmosphere(std::shared_ptr<Plugin::Settings> const& pluginSettings,
   settings->initAnchor(*this, anchorName);
 
   mRenderer.setRadii(mRadii);
-  mRenderer.setUseLinearDepthBuffer(true);
-  mRenderer.setDrawSun(false);
   mRenderer.setSecondaryRaySteps(3);
 
   VistaSceneGraph* pSG = GetVistaSystem()->GetGraphicsManager()->GetSceneGraph();
