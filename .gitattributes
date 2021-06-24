@@ -8,6 +8,9 @@
 *.sh  text eol=lf
 *.bat text eol=crlf
 
+# These should not be modified by git!
+*.hdr binary
+
 # Ignore some javascript files while computing the repository's most used languages on Github.
 resources/gui/third-party/* linguist-vendored
 resources/gui/js/moon.js linguist-vendored
