@@ -19,6 +19,7 @@ add_library(cs-graphics SHARED
 target_link_libraries(cs-graphics
   PUBLIC
     gli::gli
+    OpenGL::GLU
     cs-utils
 )
 
