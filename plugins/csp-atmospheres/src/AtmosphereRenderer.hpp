@@ -168,7 +168,6 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
     std::array<uint32_t, 5> shadowMaps{};
     std::array<uint32_t, 5> shadowProjectionMatrices{};
 
-    uint32_t modelViewProjectionMatrix = 0;
     uint32_t inverseModelViewMatrix    = 0;
     uint32_t inverseProjectionMatrix   = 0;
     uint32_t modelViewMatrix           = 0;
