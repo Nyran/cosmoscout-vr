@@ -17,8 +17,11 @@ namespace cs::graphics {
 /// For loading VistaTextures.
 class CS_GRAPHICS_EXPORT TextureLoader {
  public:
-  /// Loads a VistaTexture from the given file.
-  static std::unique_ptr<VistaTexture> loadFromFile(std::string const& sFileName);
+  /// Loads a VistaTexture from the given file. Supports TGA, TIFF, JPEG, PNG, BMP and HDR. For HDR
+  /// images, floating point textures are created. If one dimension of the loaded image is only one
+  /// pixel, GL_TEXTURE_1D is used as target.
+  static std::unique_ptr<VistaTexture> loadFromFile(
+      std::string const& sFileName, bool generateMipMaps = true);
 };
 
 } // namespace cs::graphics

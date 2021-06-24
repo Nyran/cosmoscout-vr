@@ -27,7 +27,8 @@ namespace cs::graphics {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-std::unique_ptr<VistaTexture> TextureLoader::loadFromFile(std::string const& sFileName) {
+std::unique_ptr<VistaTexture> TextureLoader::loadFromFile(
+    std::string const& sFileName, bool generateMipMaps) {
 
   std::string suffix = sFileName.substr(sFileName.rfind('.'));
 
@@ -36,8 +37,6 @@ std::unique_ptr<VistaTexture> TextureLoader::loadFromFile(std::string const& sFi
     logger().debug("Loading Texture '{}' with Vista.", sFileName);
     return std::unique_ptr<VistaTexture>(VistaOGLUtils::LoadTextureFromTga(sFileName));
   }
-
-  std::unique_ptr<VistaTexture> result = std::make_unique<VistaTexture>(GL_TEXTURE_2D);
 
   if (suffix == ".tiff" || suffix == ".tif") {
     // load with tifflib
@@ -83,31 +82,96 @@ std::unique_ptr<VistaTexture> TextureLoader::loadFromFile(std::string const& sFi
       ePixelFormat = GL_RGB;
     }
 
-    result->UploadTexture(width, height, pixels.data(), true, ePixelFormat);
+    std::unique_ptr<VistaTexture> texture;
+    uint32                        minDim = std::min(width, height);
+    uint32                        maxDim = std::max(width, height);
+
+    if (minDim == 1) {
+      texture = std::make_unique<VistaTexture>(GL_TEXTURE_1D);
+      texture->UploadTexture(maxDim, 1, pixels.data(), generateMipMaps, ePixelFormat);
+    } else {
+      texture = std::make_unique<VistaTexture>(GL_TEXTURE_2D);
+      texture->UploadTexture(width, height, pixels.data(), generateMipMaps, ePixelFormat);
+    }
 
     TIFFClose(data);
-  } else {
+
+    return texture;
+
+  } else if (suffix == ".hdr") {
+
     // load with stb image
-    logger().debug("Loading Texture '{}' with stbi.", sFileName);
+    logger().debug("Loading HDR Texture '{}' with stbi.", sFileName);
 
     int width{};
     int height{};
     int bpp{};
     int channels = 4;
 
-    unsigned char* pixels = stbi_load(sFileName.c_str(), &width, &height, &bpp, channels);
+    float* pixels = stbi_loadf(sFileName.c_str(), &width, &height, &bpp, channels);
 
     if (!pixels) {
       logger().error("Failed to load '{}' with stbi!", sFileName);
       return nullptr;
     }
 
-    result->UploadTexture(width, height, pixels);
+    std::unique_ptr<VistaTexture> texture;
+    uint32                        minDim = std::min(width, height);
+    uint32                        maxDim = std::max(width, height);
+
+    if (minDim == 1) {
+      texture = std::make_unique<VistaTexture>(GL_TEXTURE_1D);
+      texture->Bind();
+      if (generateMipMaps) {
+        gluBuild1DMipmaps(GL_TEXTURE_1D, GL_RGBA32F, maxDim, GL_RGBA, GL_FLOAT, pixels);
+      } else {
+        glTexImage1D(GL_TEXTURE_1D, 0, GL_RGBA32F, maxDim, 0, GL_RGBA, GL_FLOAT, pixels);
+      }
+    } else {
+      texture = std::make_unique<VistaTexture>(GL_TEXTURE_2D);
+      texture->Bind();
+      if (generateMipMaps) {
+        gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGBA32F, width, height, GL_RGBA, GL_FLOAT, pixels);
+      } else {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, pixels);
+      }
+    }
 
     stbi_image_free(pixels);
+
+    return texture;
   }
 
-  return result;
+  // load with stb image
+  logger().debug("Loading Texture '{}' with stbi.", sFileName);
+
+  int width{};
+  int height{};
+  int bpp{};
+  int channels = 4;
+
+  unsigned char* pixels = stbi_load(sFileName.c_str(), &width, &height, &bpp, channels);
+
+  if (!pixels) {
+    logger().error("Failed to load '{}' with stbi!", sFileName);
+    return nullptr;
+  }
+
+  std::unique_ptr<VistaTexture> texture;
+  uint32                        minDim = std::min(width, height);
+  uint32                        maxDim = std::max(width, height);
+
+  if (minDim == 1) {
+    texture = std::make_unique<VistaTexture>(GL_TEXTURE_1D);
+    texture->UploadTexture(maxDim, 1, pixels, generateMipMaps);
+  } else {
+    texture = std::make_unique<VistaTexture>(GL_TEXTURE_2D);
+    texture->UploadTexture(width, height, pixels, generateMipMaps);
+  }
+
+  stbi_image_free(pixels);
+
+  return texture;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
