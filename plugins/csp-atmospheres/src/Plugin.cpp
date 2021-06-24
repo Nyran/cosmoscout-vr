@@ -36,34 +36,32 @@ namespace csp::atmospheres {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void from_json(nlohmann::json const& j, Plugin::Settings::AtmosphereComponent& o) {
+  cs::core::Settings::deserialize(j, "baseDensity", o.mBaseDensity);
+  cs::core::Settings::deserialize(j, "scaleHeight", o.mScaleHeight);
+  cs::core::Settings::deserialize(j, "phaseMap", o.mPhaseMap);
+  cs::core::Settings::deserialize(j, "extinctionMap", o.mExtinctionMap);
+}
+
+void to_json(nlohmann::json& j, Plugin::Settings::AtmosphereComponent const& o) {
+  cs::core::Settings::serialize(j, "baseDensity", o.mBaseDensity);
+  cs::core::Settings::serialize(j, "scaleHeight", o.mScaleHeight);
+  cs::core::Settings::serialize(j, "phaseMap", o.mPhaseMap);
+  cs::core::Settings::serialize(j, "extinctionMap", o.mExtinctionMap);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void from_json(nlohmann::json const& j, Plugin::Settings::Atmosphere& o) {
   cs::core::Settings::deserialize(j, "atmosphereHeight", o.mAtmosphereHeight);
-  cs::core::Settings::deserialize(j, "mieHeight", o.mMieHeight);
-  cs::core::Settings::deserialize(j, "mieScatteringR", o.mMieScatteringR);
-  cs::core::Settings::deserialize(j, "mieScatteringG", o.mMieScatteringG);
-  cs::core::Settings::deserialize(j, "mieScatteringB", o.mMieScatteringB);
-  cs::core::Settings::deserialize(j, "mieAnisotropy", o.mMieAnisotropy);
-  cs::core::Settings::deserialize(j, "rayleighHeight", o.mRayleighHeight);
-  cs::core::Settings::deserialize(j, "rayleighScatteringR", o.mRayleighScatteringR);
-  cs::core::Settings::deserialize(j, "rayleighScatteringG", o.mRayleighScatteringG);
-  cs::core::Settings::deserialize(j, "rayleighScatteringB", o.mRayleighScatteringB);
-  cs::core::Settings::deserialize(j, "rayleighAnisotropy", o.mRayleighAnisotropy);
+  cs::core::Settings::deserialize(j, "components", o.mComponents);
   cs::core::Settings::deserialize(j, "cloudTexture", o.mCloudTexture);
   cs::core::Settings::deserialize(j, "cloudHeight", o.mCloudHeight);
 }
 
 void to_json(nlohmann::json& j, Plugin::Settings::Atmosphere const& o) {
   cs::core::Settings::serialize(j, "atmosphereHeight", o.mAtmosphereHeight);
-  cs::core::Settings::serialize(j, "mieHeight", o.mMieHeight);
-  cs::core::Settings::serialize(j, "mieScatteringR", o.mMieScatteringR);
-  cs::core::Settings::serialize(j, "mieScatteringG", o.mMieScatteringG);
-  cs::core::Settings::serialize(j, "mieScatteringB", o.mMieScatteringB);
-  cs::core::Settings::serialize(j, "mieAnisotropy", o.mMieAnisotropy);
-  cs::core::Settings::serialize(j, "rayleighHeight", o.mRayleighHeight);
-  cs::core::Settings::serialize(j, "rayleighScatteringR", o.mRayleighScatteringR);
-  cs::core::Settings::serialize(j, "rayleighScatteringG", o.mRayleighScatteringG);
-  cs::core::Settings::serialize(j, "rayleighScatteringB", o.mRayleighScatteringB);
-  cs::core::Settings::serialize(j, "rayleighAnisotropy", o.mRayleighAnisotropy);
+  cs::core::Settings::serialize(j, "components", o.mComponents);
   cs::core::Settings::serialize(j, "cloudTexture", o.mCloudTexture);
   cs::core::Settings::serialize(j, "cloudHeight", o.mCloudHeight);
 }

@@ -39,7 +39,7 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     : mPluginSettings(std::move(settings)) {
 
   cAtmosphereVert = R"(
-  #version 330
+  #version 400
 
   // inputs
   layout(location = 0) in vec2 vPosition;
@@ -74,7 +74,7 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
 )";
 
   cAtmosphereFrag = R"(
-  #version 330
+  #version 400
 
   // inputs
   in VaryingStruct {
@@ -84,7 +84,7 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
   } vsIn;
 
   // uniforms
-  #if HDR_SAMPLES > 0
+  #if $HDR_SAMPLES > 0
     uniform sampler2DMS uColorBuffer;
     uniform sampler2DMS uDepthBuffer;
   #else
@@ -115,10 +115,14 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
 
   // constants
   const float PI          = 3.14159265359;
-  const float STEP_LENGTH = 0.1 / PRIMARY_RAY_STEPS;
-  const int   MAX_SAMPLES = PRIMARY_RAY_STEPS * 10;
-  const vec3  BR          = vec3(BETA_R_0,BETA_R_1,BETA_R_2);
-  const vec3  BM          = vec3(BETA_M_0,BETA_M_1,BETA_M_2);
+  const float STEP_LENGTH = $BODY_RADIUS * 0.1 / $PRIMARY_RAY_STEPS;
+  const int   MAX_SAMPLES = $PRIMARY_RAY_STEPS * 10;
+
+  // Actually only the first $ATMOSPHERE_COMPONENTS of these vec4's are used.
+  uniform vec4      uBaseDensities;
+  uniform vec4      uScaleHeights;
+  uniform sampler1D uPhaseMaps[$ATMOSPHERE_COMPONENTS];
+  uniform sampler1D uExtinctionMaps[$ATMOSPHERE_COMPONENTS];
 
   vec3 heat(float v) {
     float value = 1.0-v;
@@ -132,36 +136,59 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
   }
 
   // compute the density of the atmosphere for a given model space position
+  float GetDensity(vec3 vPos) {
+    float fHeight = max(0.0, length(vPos) - $BODY_RADIUS);
+    return exp(-fHeight/($HEIGHT_ATMO*0.1)) * 1.2;
+  }
+
   // returns the rayleigh density as x component and the mie density as Y
-  vec3 GetDensity(vec3 vPos) {
-    float fHeight = max(0.0, length(vPos) - 1.0 + HEIGHT_ATMO);
-    return exp(vec3(-fHeight/(HEIGHT_ATMO*0.1), -fHeight/HEIGHT_R, -fHeight/HEIGHT_M)) * vec3(1.2, 1.0, 1.0);
+  vec4 GetComponentDensity(vec3 vPos) {
+    float fHeight = max(0.0, length(vPos) - $BODY_RADIUS);
+    vec4 result = vec4(0.0);
+
+    for (int i=0; i<$ATMOSPHERE_COMPONENTS; ++i) {
+      result[i] = exp(-fHeight/(uScaleHeights[i])) * uBaseDensities[i];
+    }
+
+    return result;
   }
 
   // returns the optical depth between two points in model space
   // The ray is defined by its origin and direction. The two points are defined
   // by two T parameters along the ray. Two values are returned, the rayleigh
   // depth and the mie depth.
-  vec2 GetOpticalDepth(vec3 vRayOrigin, vec3 vRayDir, float fTStart, float fTEnd) {
-    float fStep = (fTEnd - fTStart) / SECONDARY_RAY_STEPS;
-    vec2 vSum = vec2(0.0);
+  vec4 GetComponentOpticalDepth(vec3 vRayOrigin, vec3 vRayDir, float fTStart, float fTEnd) {
+    float fStep = (fTEnd - fTStart) / $SECONDARY_RAY_STEPS;
+    vec4 sum = vec4(0.0);
 
-    for (int i=0; i<SECONDARY_RAY_STEPS; i++) {
+    for (int i=0; i<$SECONDARY_RAY_STEPS; i++) {
       float fTCurr = fTStart + (i+0.5)*fStep;
       vec3  vPos = vRayOrigin + vRayDir * fTCurr;
-      vSum += GetDensity(vPos).yz;
+
+      sum += GetComponentDensity(vPos);
     }
 
-    return vSum * fStep;
+    return sum * fStep;
   }
 
   // calculates the extinction based on an optical depth
-  vec3 GetExtinction(vec2 vOpticalDepth) {
-    return exp(-BR*vOpticalDepth.x-BM*vOpticalDepth.y);
+  vec3 GetBeta(sampler1D extinctionMap) {
+    // return vec3(0.01, 0.01, 0.01);
+    return texture(extinctionMap, 0.0).rgb*0.0001;
+  }
+
+  vec3 GetExtinction(vec4 vOpticalDepth) {
+    vec3 totalExtinction = vec3(1.0);
+
+    for (int i=0; i<$ATMOSPHERE_COMPONENTS; ++i) {
+      totalExtinction *= exp(-GetBeta(uExtinctionMaps[i])*vOpticalDepth[i]);
+    }
+
+    return totalExtinction;
   }
 
   float GetRefractiveIndex(vec3 vPos) {
-    float density = GetDensity(vPos).x;
+    float density = GetDensity(vPos);
 
     float highDensity = 0.00005448;
     float lowDensity = 1.2;
@@ -208,42 +235,27 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
   }
 
   bool IntersectAtmosphere(vec3 vRayOrigin, vec3 vRayDir, out float t1, out float t2) {
-    return IntersectSphere(vRayOrigin, vRayDir, 1.0, t1, t2);
+    return IntersectSphere(vRayOrigin, vRayDir, $BODY_RADIUS + $HEIGHT_ATMO, t1, t2);
   }
 
   bool IntersectPlanetsphere(vec3 vRayOrigin, vec3 vRayDir, out float t1, out float t2) {
-    return IntersectSphere(vRayOrigin, vRayDir, 1.0-HEIGHT_ATMO, t1, t2);
+    return IntersectSphere(vRayOrigin, vRayDir, $BODY_RADIUS, t1, t2);
   }
 
   // returns the probability of scattering
-  // based on the cosine (c) between in and out direction and the anisotropy (g)
-  //
-  //            3 * (1 - g*g)               1 + c*c
-  // phase = -------------------- * -----------------------
-  //          8 * PI * (2 + g*g)     (1 + g*g - 2*g*c)^1.5
-  //
-  float GetPhase(float fCosine, float fAnisotropy) {
-    float fAnisotropy2 = fAnisotropy * fAnisotropy;
-    float fCosine2     = fCosine * fCosine;
-
-    float a = (1.0 - fAnisotropy2) * (1.0 + fCosine2);
-    float b =  1.0 + fAnisotropy2 - 2.0 * fAnisotropy * fCosine;
-
-    b *= sqrt(b);
-    b *= 2.0 + fAnisotropy2;
-
-    return 3.0/(8.0*PI) * a/b;
+  vec3 GetPhase(sampler1D phaseMap, float angle) {
+    return texture(phaseMap, angle/PI).rgb;
   }
 
   // Returns the background color at the current pixel. If multisampling is used, we take the
   // average color.
   vec3 GetBackgroundColor(vec2 texcoords) {
-    #if HDR_SAMPLES > 0
+    #if $HDR_SAMPLES > 0
       vec3 color = vec3(0.0);
-      for (int i = 0; i < HDR_SAMPLES; ++i) {
+      for (int i = 0; i < $HDR_SAMPLES; ++i) {
         color += texelFetch(uColorBuffer, ivec2(texcoords * textureSize(uColorBuffer)), i).rgb;
       }
-      return color / HDR_SAMPLES;
+      return color / $HDR_SAMPLES;
     #else
       return texture(uColorBuffer, texcoords).rgb;
     #endif
@@ -251,9 +263,9 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
 
   // Returns the depth at the current pixel. If multisampling is used, we take the minimum depth.
   float GetDepth(vec2 texcoords) {
-    #if HDR_SAMPLES > 0
+    #if $HDR_SAMPLES > 0
       float depth = 1.0;
-      for (int i = 0; i < HDR_SAMPLES; ++i) {
+      for (int i = 0; i < $HDR_SAMPLES; ++i) {
         depth = min(depth, texelFetch(uDepthBuffer, ivec2(texcoords *
         textureSize(uDepthBuffer)), i).r);
       }
@@ -282,7 +294,7 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     int   samples          = 0;
     
     float pathLength       = 0;
-    vec2  pathOpticalDepth = vec2(0.0);
+    vec4  pathOpticalDepth = vec4(0.0);
 
     bool  exitedAtmosphere = false;
     bool  hitPlanet        = false;
@@ -292,7 +304,7 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
       // Decrease step length to ensure a maximum density change per step.
       float stepLength = STEP_LENGTH;
       const float maxDensityChange = 0.1;
-      while (abs(GetDensity(vSamplePos).x - GetDensity(vSamplePos+vRayDir*stepLength).x) > maxDensityChange) {
+      while (abs(GetDensity(vSamplePos) - GetDensity(vSamplePos+vRayDir*stepLength)) > maxDensityChange) {
         stepLength /= 2;
       }
 
@@ -308,27 +320,34 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
         hitPlanet = true;
       }
 
-      pathOpticalDepth += GetOpticalDepth(vSamplePos, vRayDir, 0, stepLength);
+      pathOpticalDepth += GetComponentOpticalDepth(vSamplePos, vRayDir, 0, stepLength);
 
       vec3 stepCenter = vSamplePos + 0.5 * stepLength * vRayDir;
 
       if (!IntersectPlanetsphere(stepCenter, uSunDir, t1, t2)) {
+
         IntersectAtmosphere(stepCenter, uSunDir, t1, t2);
-        vec2 vOpticalDepthToSun = GetOpticalDepth(stepCenter, uSunDir, 0, t2);
-        vec3 vExtinction = GetExtinction(vOpticalDepthToSun+pathOpticalDepth);
+        float angle    = acos(dot(vRayDir, uSunDir));
 
-        float fCosine    = dot(vRayDir, uSunDir);
-        vec2 vDensity    = GetDensity(stepCenter).yz;
+        vec3 totalExtinction = vec3(1.0);
+        vec4 vOpticalDepthToSun = GetComponentOpticalDepth(stepCenter, uSunDir, 0, t2);
 
-        oColor += stepLength * vExtinction * uSunIlluminance *
-                  (vDensity.x * BR * GetPhase(fCosine, ANISOTROPY_R) + 
-                   vDensity.y * BM * GetPhase(fCosine, ANISOTROPY_M));
+        for (int i=0; i<$ATMOSPHERE_COMPONENTS; ++i) {
+          totalExtinction *= GetExtinction(vOpticalDepthToSun+pathOpticalDepth);
+        }
+
+        vec4 densities = GetComponentDensity(stepCenter);
+
+        for (int i=0; i<$ATMOSPHERE_COMPONENTS; ++i) {
+          oColor += stepLength * totalExtinction * uSunIlluminance *
+                    (densities[i] * GetBeta(uExtinctionMaps[i]) * GetPhase(uPhaseMaps[i], angle));
+        }
       }
 
       vSamplePos += stepLength * vRayDir;
       pathLength += stepLength;
 
-      #if ENABLE_REFRACTION
+      #if $ENABLE_REFRACTION
         float refractiveIndex = GetRefractiveIndex(vSamplePos);
         vec3 dn = GetRefractiveIndexGradient(vSamplePos, STEP_LENGTH*0.1);
         vRayDir = normalize(refractiveIndex * vRayDir + dn * stepLength);
@@ -352,7 +371,7 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     // area by consulting the depth buffer: If our ray did not hit the planet, but there is
     // something at sampleCoords, we are actually behind the planet. We will use just black as the
     // background color and draw an artificial sun.
-    #if ENABLE_REFRACTION
+    #if $ENABLE_REFRACTION
       if (!hitPlanet && GetDepth(sampleCoords.xy) < 1) {
         float fSunAngle = max(0,dot(vRayDir, uSunDir));
         backgroundColor = vec3(fSunAngle > 0.99999 ? uSunLuminance : 0);
@@ -363,7 +382,7 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     // this to attenuate the color buffer and the direct sun light.
     backgroundColor *= GetExtinction(pathOpticalDepth);
 
-    #if !ENABLE_HDR
+    #if !$ENABLE_HDR
       const float exposure = 0.6;
       const float gamma    = 2.2;
       oColor = clamp(exposure * oColor, 0.0, 1.0);
@@ -499,80 +518,19 @@ void AtmosphereRenderer::setAtmosphereHeight(float dValue) {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-float AtmosphereRenderer::getMieHeight() const {
-  return mMieHeight;
+std::vector<AtmosphereComponent> const& AtmosphereRenderer::getAtmosphereComponents() const {
+  return mComponents;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void AtmosphereRenderer::setMieHeight(float dValue) {
-  mMieHeight   = dValue;
+void AtmosphereRenderer::setAtmosphereComponents(std::vector<AtmosphereComponent> const& value) {
+  if (value.size() > 4) {
+    logger().warn("Only up to four atmosphere components are currently supported.");
+  }
+
+  mComponents  = value;
   mShaderDirty = true;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-glm::vec3 AtmosphereRenderer::getMieScattering() const {
-  return mMieScattering;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void AtmosphereRenderer::setMieScattering(const glm::vec3& vValue) {
-  mMieScattering = vValue;
-  mShaderDirty   = true;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-float AtmosphereRenderer::getMieAnisotropy() const {
-  return mMieAnisotropy;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void AtmosphereRenderer::setMieAnisotropy(float dValue) {
-  mMieAnisotropy = dValue;
-  mShaderDirty   = true;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-float AtmosphereRenderer::getRayleighHeight() const {
-  return mRayleighHeight;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void AtmosphereRenderer::setRayleighHeight(float dValue) {
-  mRayleighHeight = dValue;
-  mShaderDirty    = true;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-glm::vec3 AtmosphereRenderer::getRayleighScattering() const {
-  return mRayleighScattering;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void AtmosphereRenderer::setRayleighScattering(const glm::vec3& vValue) {
-  mRayleighScattering = vValue;
-  mShaderDirty        = true;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-float AtmosphereRenderer::getRayleighAnisotropy() const {
-  return mRayleighAnisotropy;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void AtmosphereRenderer::setRayleighAnisotropy(float dValue) {
-  mRayleighAnisotropy = dValue;
-  mShaderDirty        = true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -633,25 +591,17 @@ void AtmosphereRenderer::updateShader() {
   std::string sVert(cAtmosphereVert);
   std::string sFrag(cAtmosphereFrag);
 
-  cs::utils::replaceString(sFrag, "ANISOTROPY_R", cs::utils::toString(mRayleighAnisotropy));
-  cs::utils::replaceString(sFrag, "ANISOTROPY_M", cs::utils::toString(mMieAnisotropy));
-  cs::utils::replaceString(sFrag, "HEIGHT_R", cs::utils::toString(mRayleighHeight));
-  cs::utils::replaceString(sFrag, "HEIGHT_M", cs::utils::toString(mMieHeight));
-  cs::utils::replaceString(sFrag, "BETA_R_0", cs::utils::toString(mRayleighScattering[0]));
-  cs::utils::replaceString(sFrag, "BETA_R_1", cs::utils::toString(mRayleighScattering[1]));
-  cs::utils::replaceString(sFrag, "BETA_R_2", cs::utils::toString(mRayleighScattering[2]));
-  cs::utils::replaceString(sFrag, "BETA_M_0", cs::utils::toString(mMieScattering[0]));
-  cs::utils::replaceString(sFrag, "BETA_M_1", cs::utils::toString(mMieScattering[1]));
-  cs::utils::replaceString(sFrag, "BETA_M_2", cs::utils::toString(mMieScattering[2]));
-  cs::utils::replaceString(sFrag, "PRIMARY_RAY_STEPS", cs::utils::toString(mPrimaryRaySteps));
-  cs::utils::replaceString(sFrag, "SECONDARY_RAY_STEPS", cs::utils::toString(mSecondaryRaySteps));
-  cs::utils::replaceString(sFrag, "HEIGHT_ATMO", cs::utils::toString(mAtmosphereHeight));
-  cs::utils::replaceString(sFrag, "ENABLE_REFRACTION", std::to_string(mEnableRefraction));
-  cs::utils::replaceString(sFrag, "DRAW_WATER", std::to_string(mDrawWater));
-  cs::utils::replaceString(sFrag, "USE_SHADOWMAP", std::to_string(mShadowMap != nullptr));
-  cs::utils::replaceString(sFrag, "USE_CLOUDMAP", std::to_string(mUseClouds && mCloudTexture));
-  cs::utils::replaceString(sFrag, "ENABLE_HDR", std::to_string(mHDRBuffer != nullptr));
-  cs::utils::replaceString(sFrag, "HDR_SAMPLES",
+  cs::utils::replaceString(sFrag, "$PRIMARY_RAY_STEPS", cs::utils::toString(mPrimaryRaySteps));
+  cs::utils::replaceString(sFrag, "$SECONDARY_RAY_STEPS", cs::utils::toString(mSecondaryRaySteps));
+  cs::utils::replaceString(sFrag, "$HEIGHT_ATMO", cs::utils::toString(mAtmosphereHeight));
+  cs::utils::replaceString(sFrag, "$ENABLE_REFRACTION", std::to_string(mEnableRefraction));
+  cs::utils::replaceString(sFrag, "$ATMOSPHERE_COMPONENTS", std::to_string(mComponents.size()));
+  cs::utils::replaceString(sFrag, "$BODY_RADIUS", std::to_string(mRadii[0]));
+  // cs::utils::replaceString(sFrag, "$DRAW_WATER", std::to_string(mDrawWater));
+  // cs::utils::replaceString(sFrag, "$USE_SHADOWMAP", std::to_string(mShadowMap != nullptr));
+  // cs::utils::replaceString(sFrag, "$USE_CLOUDMAP", std::to_string(mUseClouds && mCloudTexture));
+  cs::utils::replaceString(sFrag, "$ENABLE_HDR", std::to_string(mHDRBuffer != nullptr));
+  cs::utils::replaceString(sFrag, "$HDR_SAMPLES",
       mHDRBuffer == nullptr ? "0" : std::to_string(mHDRBuffer->getMultiSamples()));
 
   mAtmoShader.InitVertexShaderFromString(sVert);
@@ -670,6 +620,15 @@ void AtmosphereRenderer::updateShader() {
   mUniforms.cloudTexture      = mAtmoShader.GetUniformLocation("uCloudTexture");
   mUniforms.cloudAltitude     = mAtmoShader.GetUniformLocation("uCloudAltitude");
   mUniforms.shadowCascades    = mAtmoShader.GetUniformLocation("uShadowCascades");
+  mUniforms.baseDensities     = mAtmoShader.GetUniformLocation("uBaseDensities");
+  mUniforms.scaleHeights      = mAtmoShader.GetUniformLocation("uScaleHeights");
+
+  for (size_t i = 0; i < mComponents.size() && i < 4; ++i) {
+    mUniforms.phaseMaps[i] = glGetUniformLocation(
+        mAtmoShader.GetProgram(), ("uPhaseMaps[" + std::to_string(i) + "]").c_str());
+    mUniforms.extinctionMaps[i] = glGetUniformLocation(
+        mAtmoShader.GetProgram(), ("uExtinctionMaps[" + std::to_string(i) + "]").c_str());
+  }
 
   for (size_t i = 0; i < 5; ++i) {
     mUniforms.shadowMaps.at(i) = glGetUniformLocation(
@@ -724,9 +683,9 @@ bool AtmosphereRenderer::Do() {
   std::array<GLfloat, 16> glMatMV{};
   glGetFloatv(GL_MODELVIEW_MATRIX, glMatMV.data());
   glm::mat4 matMV(glm::make_mat4x4(glMatMV.data()) * glm::mat4(mWorldTransform) *
-                  glm::mat4(static_cast<float>(mRadii[0] / (1.0 - mAtmosphereHeight)), 0, 0, 0, 0,
-                      static_cast<float>(mRadii[1] / (1.0 - mAtmosphereHeight)), 0, 0, 0, 0,
-                      static_cast<float>(mRadii[2] / (1.0 - mAtmosphereHeight)), 0, 0, 0, 0, 1));
+                  glm::mat4(static_cast<float>(mRadii[0] / (mRadii[0])), 0, 0, 0, 0,
+                      static_cast<float>(mRadii[1] / (mRadii[0])), 0, 0, 0, 0,
+                      static_cast<float>(mRadii[2] / (mRadii[0])), 0, 0, 0, 0, 1));
 
   auto matInvMV = glm::inverse(matMV);
 
@@ -766,13 +725,13 @@ bool AtmosphereRenderer::Do() {
   mAtmoShader.SetUniform(mUniforms.colorBuffer, 1);
 
   if (mUseClouds && mCloudTexture) {
-    mCloudTexture->Bind(GL_TEXTURE3);
-    mAtmoShader.SetUniform(mUniforms.cloudTexture, 3);
+    mCloudTexture->Bind(GL_TEXTURE2);
+    mAtmoShader.SetUniform(mUniforms.cloudTexture, 2);
     mAtmoShader.SetUniform(mUniforms.cloudAltitude, mCloudHeight);
   }
 
   if (mShadowMap) {
-    int texUnitShadow = 4;
+    int texUnitShadow = 3;
     mAtmoShader.SetUniform(
         mUniforms.shadowCascades, static_cast<int>(mShadowMap->getMaps().size()));
     for (size_t i = 0; i < mShadowMap->getMaps().size(); ++i) {
@@ -784,6 +743,24 @@ bool AtmosphereRenderer::Do() {
       glUniformMatrix4fv(mUniforms.shadowProjectionMatrices.at(i), 1, GL_FALSE, mat.GetData());
     }
   }
+
+  int texUnitPhase      = 3 + (mShadowMap ? mShadowMap->getMaps().size() : 0);
+  int texUnitExtinction = 3 + (mShadowMap ? mShadowMap->getMaps().size() : 0) + mComponents.size();
+  glm::vec4 scaleHeights;
+  glm::vec4 baseDensities;
+  for (size_t i = 0; i < mComponents.size(); ++i) {
+    scaleHeights[i]  = mComponents[i].mScaleHeight;
+    baseDensities[i] = mComponents[i].mBaseDensity;
+
+    glUniform1i(mUniforms.phaseMaps[i], texUnitPhase + i);
+    glUniform1i(mUniforms.extinctionMaps[i], texUnitExtinction + i);
+
+    mComponents[i].mPhaseMap->Bind(GL_TEXTURE0 + texUnitPhase + i);
+    mComponents[i].mExtinctionMap->Bind(GL_TEXTURE0 + texUnitExtinction + i);
+  }
+
+  glUniform4fv(mUniforms.scaleHeights, 1, glm::value_ptr(scaleHeights));
+  glUniform4fv(mUniforms.baseDensities, 1, glm::value_ptr(baseDensities));
 
   // Why is there no set uniform for matrices???
   glUniformMatrix4fv(mUniforms.modelViewProjectionMatrix, 1, GL_FALSE, glm::value_ptr(matMVP));

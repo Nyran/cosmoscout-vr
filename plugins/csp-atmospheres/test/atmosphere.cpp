@@ -67,14 +67,6 @@ TEST_CASE("[graphical] csp::atmospheres::Atmosphere") {
 
   atmosphere.setSun(glm::vec3(1, 0, 0), 15.0, 1.0);
   atmosphere.setAtmosphereHeight(70.0 / 3460.0);
-  atmosphere.setMieHeight(5.0 / 3460.0);
-  atmosphere.setMieScattering(
-      glm::vec3(21.0e-6F * 3460000.F, 21.0e-6F * 3460000.F, 21.0e-6F * 3460000.F));
-  atmosphere.setMieAnisotropy(0.76);
-  atmosphere.setRayleighHeight(11.0 / 3460.0);
-  atmosphere.setRayleighScattering(
-      glm::vec3(20.0e-6F * 3460000.F, 13.5e-6F * 3460000.F, 5.75e-6F * 3460000.F));
-  atmosphere.setRayleighAnisotropy(0);
 
   pSG->NewOpenGLNode(pPlanetTransform, &atmosphere);
 

@@ -29,6 +29,13 @@ class HDRBuffer;
 
 namespace csp::atmospheres {
 
+struct AtmosphereComponent {
+  float                         mBaseDensity{};
+  float                         mScaleHeight{}; ///< In Kilometers.
+  std::shared_ptr<VistaTexture> mPhaseMap;
+  std::shared_ptr<VistaTexture> mExtinctionMap;
+};
+
 /// This class draws a configurable atmosphere. Just put an OpenGLNode into your SceneGraph at the
 /// very same position as your planet. Set its scale to the same size as your planet.
 class AtmosphereRenderer : public IVistaOpenGLDraw {
@@ -68,37 +75,12 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
   void setSecondaryRaySteps(int iValue);
 
   /// The maximum height of the atmosphere above the planets surface relative to the planets radius.
-  /// Default depends on the preset; for Earth 60.0 / 6360.0 is assumed.
   float getAtmosphereHeight() const;
   void  setAtmosphereHeight(float dValue);
 
-  /// The scale height for Mie scattering above the planets surface relative to the planets radius.
-  /// Default depends on the preset; for Earth 1.2 / 6360.0 is assumed.
-  float getMieHeight() const;
-  void  setMieHeight(float dValue);
-
-  /// The Mie scattering values. Default depends on the preset; for Earth (21.0, 21.0, 21.0) is
-  /// assumed.
-  glm::vec3 getMieScattering() const;
-  void      setMieScattering(const glm::vec3& vValue);
-
-  /// The Mie scattering anisotropy. Default depends on the preset; for Earth 0.76 is assumed.
-  float getMieAnisotropy() const;
-  void  setMieAnisotropy(float dValue);
-
-  /// The scale height for Rayleigh scattering above the planets surface relative to the planets
-  /// radius. Default depends on the preset; for Earth 8.0 / 6360.0 is assumed.
-  float getRayleighHeight() const;
-  void  setRayleighHeight(float dValue);
-
-  /// The Rayleigh scattering values. Default depends on the preset; for Earth (5.8, 13.5, 21.1) is
-  /// assumed.
-  glm::vec3 getRayleighScattering() const;
-  void      setRayleighScattering(const glm::vec3& vValue);
-
-  /// The Rayleigh scattering anisotropy. Default depends on the preset; for Earth 0.0 is assumed.
-  float getRayleighAnisotropy() const;
-  void  setRayleighAnisotropy(float dValue);
+  /// The different components of the atmosphere.
+  std::vector<AtmosphereComponent> const& getAtmosphereComponents() const;
+  void setAtmosphereComponents(std::vector<AtmosphereComponent> const& value);
 
   /// If true, an artificial disc is drawn in the suns direction.
   bool getEnableRefraction() const;
@@ -149,6 +131,8 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
 
   std::unordered_map<VistaViewport*, GBufferData> mGBufferData;
 
+  std::vector<AtmosphereComponent> mComponents;
+
   bool      mShaderDirty       = true;
   bool      mEnableRefraction  = false;
   bool      mDrawWater         = false;
@@ -160,14 +144,6 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
   float     mSunIlluminance    = 1.F;
   float     mSunLuminance      = 1.F;
   glm::vec3 mSunDirection      = glm::vec3(1, 0, 0);
-
-  float     mMieHeight     = 0.0F;
-  glm::vec3 mMieScattering = glm::vec3(1, 1, 1);
-  float     mMieAnisotropy = 0.0F;
-
-  float     mRayleighHeight     = 0.0F;
-  glm::vec3 mRayleighScattering = glm::vec3(1, 1, 1);
-  float     mRayleighAnisotropy = 0.0F;
 
   float mApproximateBrightness = 0.0F;
 
@@ -183,6 +159,11 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
     uint32_t cloudTexture      = 0;
     uint32_t cloudAltitude     = 0;
     uint32_t shadowCascades    = 0;
+
+    uint32_t                baseDensities = 0;
+    uint32_t                scaleHeights  = 0;
+    std::array<uint32_t, 4> phaseMaps{};
+    std::array<uint32_t, 4> extinctionMaps{};
 
     std::array<uint32_t, 5> shadowMaps{};
     std::array<uint32_t, 5> shadowProjectionMatrices{};

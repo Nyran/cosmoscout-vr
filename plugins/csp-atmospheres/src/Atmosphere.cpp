@@ -8,6 +8,7 @@
 
 #include "../../../src/cs-core/GraphicsEngine.hpp"
 #include "../../../src/cs-core/SolarSystem.hpp"
+#include "../../../src/cs-graphics/TextureLoader.hpp"
 #include "../../../src/cs-utils/utils.hpp"
 
 #include <VistaKernel/GraphicsManager/VistaGroupNode.h>
@@ -53,14 +54,23 @@ void Atmosphere::configure(Plugin::Settings::Atmosphere const& settings) {
     mRenderer.setClouds("", 0.0F);
   }
   mRenderer.setAtmosphereHeight(settings.mAtmosphereHeight);
-  mRenderer.setMieHeight(settings.mMieHeight);
-  mRenderer.setMieScattering(
-      glm::vec3(settings.mMieScatteringR, settings.mMieScatteringG, settings.mMieScatteringB));
-  mRenderer.setMieAnisotropy(settings.mMieAnisotropy);
-  mRenderer.setRayleighHeight(settings.mRayleighHeight);
-  mRenderer.setRayleighScattering(glm::vec3(
-      settings.mRayleighScatteringR, settings.mRayleighScatteringG, settings.mRayleighScatteringB));
-  mRenderer.setRayleighAnisotropy(settings.mRayleighAnisotropy);
+
+  std::vector<AtmosphereComponent> components;
+
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+  for (auto const& c : settings.mComponents) {
+    components.push_back({c.mBaseDensity, c.mScaleHeight,
+        cs::graphics::TextureLoader::loadFromFile(c.mPhaseMap, false),
+        cs::graphics::TextureLoader::loadFromFile(c.mExtinctionMap, false)});
+    components.back().mPhaseMap->Bind();
+    components.back().mPhaseMap->SetWrapS(GL_CLAMP);
+    components.back().mPhaseMap->SetWrapT(GL_CLAMP);
+    components.back().mPhaseMap->SetMinFilter(GL_LINEAR);
+    components.back().mPhaseMap->SetMagFilter(GL_LINEAR);
+    components.back().mPhaseMap->Unbind();
+  }
+  mRenderer.setAtmosphereComponents(components);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

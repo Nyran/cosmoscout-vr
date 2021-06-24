@@ -23,20 +23,18 @@ class Atmosphere;
 class Plugin : public cs::core::PluginBase {
  public:
   struct Settings {
+    struct AtmosphereComponent {
+      float       mBaseDensity{};
+      float       mScaleHeight{}; ///< In Kilometers.
+      std::string mPhaseMap;
+      std::string mExtinctionMap;
+    };
+
     struct Atmosphere {
-      float                      mAtmosphereHeight{}; ///< Relative to the planets radius.
-      float                      mMieHeight{};
-      float                      mMieScatteringR{};
-      float                      mMieScatteringG{};
-      float                      mMieScatteringB{};
-      float                      mMieAnisotropy{};
-      float                      mRayleighHeight{};
-      float                      mRayleighScatteringR{};
-      float                      mRayleighScatteringG{};
-      float                      mRayleighScatteringB{};
-      float                      mRayleighAnisotropy{};
-      std::optional<std::string> mCloudTexture; ///< Path to the cloud texture.
-      std::optional<float>       mCloudHeight;  ///< Relative to the planets radius.
+      float                            mAtmosphereHeight{}; ///< In Kilometers.
+      std::vector<AtmosphereComponent> mComponents;
+      std::optional<std::string>       mCloudTexture; ///< Path to the cloud texture.
+      std::optional<float>             mCloudHeight;  ///< In Kilometers.
     };
 
     std::map<std::string, Atmosphere> mAtmospheres;
