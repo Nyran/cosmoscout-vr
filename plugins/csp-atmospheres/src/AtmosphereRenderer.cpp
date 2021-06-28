@@ -113,9 +113,7 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
   layout(location = 0) out vec3 oColor;
 
   // constants
-  const float PI          = 3.14159265359;
-  const float STEP_LENGTH = $BODY_RADIUS * 0.1 / $PRIMARY_RAY_STEPS;
-  const int   MAX_SAMPLES = $PRIMARY_RAY_STEPS * 10;
+  const float PI = 3.14159265359;
 
   // Actually only the first $ATMOSPHERE_COMPONENTS of these vec4's are used.
   uniform vec4      uBaseDensities;
@@ -262,75 +260,119 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     return length(vsIn.vRayOrigin - (uMatInvMV * vec4(posVS, 1.0)).xyz);
   }
 
+  float getT(float currSample, int maxSamples, float sampleFocus, float tMin, float tMax) {
+    float exponent = 2;
+    float sampleRatio = pow(sampleFocus, 0.5);
+
+    //if (vsIn.vTexcoords.x < 0.333) {
+    //  exponent = 1.0;
+    //} else if (vsIn.vTexcoords.x < 0.6666) {
+    //  exponent = 2;
+    //} else {
+    //  exponent = 3;
+    //}
+
+    float t = currSample / maxSamples;
+
+    if (sampleFocus <= 0) {
+      t = pow(t, exponent);
+    } else if (sampleFocus >= 1) {
+      t = 1 - pow(1-t, exponent);
+    } else if (t < sampleRatio) {
+      t = (1-pow(1-t/sampleRatio,1))*sampleFocus;
+    } else {
+      t = pow((t-sampleRatio)/(1-sampleRatio),exponent)*(1-sampleFocus) + sampleFocus;
+    }
+
+    return tMin + t * (tMax-tMin);
+  }
+
   void main() {
 
     vec3 vRayDir = normalize(vsIn.vRayDir);
 
-    // tCurr and tMax are the distances from the ray origin to the intersections with the
-    // atmosphere boundary. If the origin is inside the atmosphere, tCurr == 0.
-    float tCurr = 0;
+    // tMin and tMax are the distances from the ray origin to the intersections with the
+    // atmosphere boundary. If the origin is inside the atmosphere, tMin == 0.
+    float tMin = 0;
     float tMax = 0;
-    if (!IntersectAtmosphere(vsIn.vRayOrigin, vRayDir, tCurr, tMax)) {
+    if (!IntersectAtmosphere(vsIn.vRayOrigin, vRayDir, tMin, tMax)) {
       oColor = GetBackgroundColor(vsIn.vTexcoords);
       return;
     }
 
+    bool bHitsSurface = false;
+
     float pixelDepth = GetDepthVS();
     if (pixelDepth >= 0) {
       tMax = min(tMax, pixelDepth);
+      bHitsSurface = true;
     }
+
+    // If this is zero, we will sample more densely at the start of the ray, if it's one,
+    // we sample more at the end. For any value in between, the densest position will be
+    // at the corrensponding position.
+    //
+    // If the ray hits the planet's surface, we sample more densely at the end. If it
+    // travels unblocked through the atmosphere, we will sample most densely at the
+    // position closest to the planet's surface.
+    //
+    //         tMin                                                                   tMax
+    // 0.00:   xxx-x--x---x------x------------x-------------------x----------------------x
+    // 0.25:   x---------x---x-xx-x---x--------x----------------x------------------------x
+    // 0.50:   x--------------------x-------x--x-xx-x--x-------x-------------------------x
+    // 0.75:   x-------------------x----------------x---------x---x-xx-x---x-------------x
+    // 1.00:   x------------------x------------------x---------------x--------x---x--x-xxx
+    float sampleFocus;
+    // int stepCount;
+    int stepCount = $PRIMARY_RAY_STEPS;
+
+    if (bHitsSurface) {
+      sampleFocus = 1.0;
+    } else {
+      float tMostDense = dot(-vsIn.vRayOrigin, vRayDir) / dot(vRayDir, vRayDir);
+      if (tMostDense > tMin) {
+        sampleFocus = (tMostDense - tMin) / (tMax - tMin);
+      } else {
+        sampleFocus = 0.0;
+      }
+    }
+
     oColor = vec3(0.0);
 
-    int  samples          = 0;
     vec4 pathOpticalDepth = vec4(0.0);
-    bool exitedAtmosphere = false;
-    
-    while(++samples < MAX_SAMPLES && !exitedAtmosphere) {
 
-      // Decrease step length to ensure a maximum density change per step.
-      float stepLength = STEP_LENGTH;
-      const float maxDensityChange = 0.01;
-      while (any(greaterThan(abs(GetDensities(vsIn.vRayOrigin + tCurr*vRayDir) - 
-                                 GetDensities(vsIn.vRayOrigin + (tCurr+stepLength)*vRayDir)), vec4(maxDensityChange)))) {
-        stepLength /= 2;
-      }
+    for(int i=0; i<stepCount; ++i) {
+      float tSegmentStart = getT(i, stepCount, sampleFocus, tMin, tMax);
+      float tSegmentEnd   = getT(i+1, stepCount, sampleFocus, tMin, tMax);
+      float stepLength    = tSegmentEnd - tSegmentStart;
+      
+      vec3 vBegin = vsIn.vRayOrigin + tSegmentStart * vRayDir;
+      vec3 vMid = vsIn.vRayOrigin + (tSegmentStart + tSegmentEnd) * 0.5 * vRayDir;
+      vec3 vEnd = vsIn.vRayOrigin + tSegmentEnd * vRayDir;
 
-      vec3 vSamplePos = vsIn.vRayOrigin + tCurr*vRayDir;
-
-      // First check whether this step will exit the atmosphere or hit the planet.
-      if (tCurr + stepLength > tMax) {
-        stepLength = tMax - tCurr;
-        exitedAtmosphere = true;
-      }
-
-      pathOpticalDepth += GetOpticalDepths(vSamplePos, vRayDir, 0, stepLength);
-
-      vec3 stepCenter = vSamplePos + 0.5 * stepLength * vRayDir;
+      pathOpticalDepth += GetOpticalDepths(vBegin, vRayDir, 0, stepLength/2);
 
       float t1 = 0;
       float t2 = 0;
-      if (!IntersectPlanetsphere(stepCenter, uSunDir, t1, t2)) {
 
-        IntersectAtmosphere(stepCenter, uSunDir, t1, t2);
-        float angle    = acos(dot(vRayDir, uSunDir));
+      IntersectAtmosphere(vMid, uSunDir, t1, t2);
+      float angle = acos(dot(vRayDir, uSunDir));
 
-        vec3 totalExtinction = vec3(1.0);
-        vec4 vOpticalDepthToSun = GetOpticalDepths(stepCenter, uSunDir, 0, t2);
+      vec4 vOpticalDepthToSun = GetOpticalDepths(vMid, uSunDir, 0, t2);
 
-        for (int i=0; i<$ATMOSPHERE_COMPONENTS; ++i) {
-          totalExtinction *= GetExtinction(vOpticalDepthToSun+pathOpticalDepth);
-        }
+      vec3 totalExtinction = GetExtinction(vOpticalDepthToSun+pathOpticalDepth);
 
-        vec4 densities = GetDensities(stepCenter) * uBaseDensities;
+      vec4 densities = GetDensities(vMid) * uBaseDensities;
 
-        for (int i=0; i<$ATMOSPHERE_COMPONENTS; ++i) {
-          oColor += stepLength * totalExtinction * uSunIlluminance *
-                    (densities[i] * GetBeta(uExtinctionMaps[i]) * GetPhase(uPhaseMaps[i], angle));
-        }
+      for (int i=0; i<$ATMOSPHERE_COMPONENTS; ++i) {
+        oColor += stepLength * totalExtinction *
+                  densities[i] * GetBeta(uExtinctionMaps[i]) * GetPhase(uPhaseMaps[i], angle);
       }
 
-      tCurr += stepLength;
+      pathOpticalDepth += GetOpticalDepths(vMid, vRayDir, 0, stepLength/2);
     }
+
+    oColor *= uSunIlluminance;
 
     // This is the color extinction for the entire light path through the atmosphere. We will use
     // this to attenuate the color buffer and the direct sun light.
@@ -346,8 +388,9 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
 
     oColor += backgroundColor;
 
-    //oColor = heat(tMax/6000000);
-    //oColor = heat(float(samples)/MAX_SAMPLES);
+    //if (vsIn.vTexcoords.x > 0.5) {
+    //  oColor = heat(float(samples)/stepCount);
+    //}
   }
 )";
 
@@ -592,9 +635,9 @@ void AtmosphereRenderer::updateShader() {
         ("uShadowProjectionViewMatrices[" + std::to_string(i) + "]").c_str());
   }
 
-  mUniforms.inverseModelViewMatrix    = mAtmoShader.GetUniformLocation("uMatInvMV");
-  mUniforms.inverseProjectionMatrix   = mAtmoShader.GetUniformLocation("uMatInvP");
-  mUniforms.modelViewMatrix           = mAtmoShader.GetUniformLocation("uMatMV");
+  mUniforms.inverseModelViewMatrix  = mAtmoShader.GetUniformLocation("uMatInvMV");
+  mUniforms.inverseProjectionMatrix = mAtmoShader.GetUniformLocation("uMatInvP");
+  mUniforms.modelViewMatrix         = mAtmoShader.GetUniformLocation("uMatMV");
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -698,11 +741,12 @@ bool AtmosphereRenderer::Do() {
     }
   }
 
-  int texUnitPhase      = static_cast<int>(3 + (mShadowMap ? mShadowMap->getMaps().size() : 0));
-  int texUnitExtinction = static_cast<int>(3 + (mShadowMap ? mShadowMap->getMaps().size() : 0) + mComponents.size());
+  int texUnitPhase = static_cast<int>(3 + (mShadowMap ? mShadowMap->getMaps().size() : 0));
+  int texUnitExtinction =
+      static_cast<int>(3 + (mShadowMap ? mShadowMap->getMaps().size() : 0) + mComponents.size());
   glm::vec4 scaleHeights;
   glm::vec4 baseDensities;
-  for (int i = 0; i < static_cast<int>( mComponents.size()); ++i) {
+  for (int i = 0; i < static_cast<int>(mComponents.size()); ++i) {
     scaleHeights[i]  = mComponents[i].mScaleHeight;
     baseDensities[i] = mComponents[i].mBaseDensity;
 
