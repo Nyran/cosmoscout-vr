@@ -29,7 +29,6 @@ Atmosphere::Atmosphere(std::shared_ptr<Plugin::Settings> const& pluginSettings,
   settings->initAnchor(*this, anchorName);
 
   mRenderer.setRadii(mRadii);
-  mRenderer.setSecondaryRaySteps(3);
 
   VistaSceneGraph* pSG = GetVistaSystem()->GetGraphicsManager()->GetSceneGraph();
   mAtmosphereNode.reset(pSG->NewOpenGLNode(pSG->GetRoot(), &mRenderer));

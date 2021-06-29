@@ -66,13 +66,9 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
   /// effects, such as reducing star brightness.
   float getApproximateSceneBrightness() const;
 
-  /// How many samples are taken along the view ray. Trades quality for performance. Default is 15.
-  int  getPrimaryRaySteps() const;
-  void setPrimaryRaySteps(int iValue);
-
-  /// How many samples are taken along the sun rays. Trades quality for performance. Default is 3.
-  int  getSecondaryRaySteps() const;
-  void setSecondaryRaySteps(int iValue);
+  /// How many samples are taken along the sun rays. Trades quality for performance. Default is 10.
+  int  getQuality() const;
+  void setQuality(int iValue);
 
   /// The maximum height of the atmosphere above the planets surface relative to the planets radius.
   float getAtmosphereHeight() const;
@@ -81,10 +77,6 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
   /// The different components of the atmosphere.
   std::vector<AtmosphereComponent> const& getAtmosphereComponents() const;
   void setAtmosphereComponents(std::vector<AtmosphereComponent> const& value);
-
-  /// If true, an artificial disc is drawn in the suns direction.
-  bool getEnableRefraction() const;
-  void setEnableRefraction(bool bEnable);
 
   /// If true, a ocean is drawn at water level.
   bool getDrawWater() const;
@@ -134,13 +126,11 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
   std::vector<AtmosphereComponent> mComponents;
 
   bool      mShaderDirty       = true;
-  bool      mEnableRefraction  = false;
   bool      mDrawWater         = false;
   float     mWaterLevel        = 0.0F;
   float     mAmbientBrightness = 0.2F;
   float     mAtmosphereHeight  = 1.0F;
-  int       mPrimaryRaySteps   = 15;
-  int       mSecondaryRaySteps = 4;
+  int       mQuality           = 10;
   float     mSunIlluminance    = 1.F;
   float     mSunLuminance      = 1.F;
   glm::vec3 mSunDirection      = glm::vec3(1, 0, 0);
@@ -168,9 +158,9 @@ class AtmosphereRenderer : public IVistaOpenGLDraw {
     std::array<uint32_t, 5> shadowMaps{};
     std::array<uint32_t, 5> shadowProjectionMatrices{};
 
-    uint32_t inverseModelViewMatrix    = 0;
-    uint32_t inverseProjectionMatrix   = 0;
-    uint32_t modelViewMatrix           = 0;
+    uint32_t inverseModelViewMatrix  = 0;
+    uint32_t inverseProjectionMatrix = 0;
+    uint32_t modelViewMatrix         = 0;
   } mUniforms;
 
   const char* cAtmosphereVert;

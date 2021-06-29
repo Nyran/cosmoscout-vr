@@ -148,10 +148,21 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
   // by two T parameters along the ray. Two values are returned, the rayleigh
   // depth and the mie depth.
   vec4 GetOpticalDepths(vec3 vRayOrigin, vec3 vRayDir, float fTStart, float fTEnd) {
-    float fStep = (fTEnd - fTStart) / $SECONDARY_RAY_STEPS;
+    
+    int steps = $QUALITY / 2;
+
+    //if (vsIn.vTexcoords.x < 0.333) {
+    //  steps = 1;
+    //} else if (vsIn.vTexcoords.x < 0.6666) {
+    //  steps = 3;
+    //} else {
+    //  steps = 10;
+    //}
+
+    float fStep = (fTEnd - fTStart) / steps;
     vec4 sum = vec4(0.0);
 
-    for (int i=0; i<$SECONDARY_RAY_STEPS; i++) {
+    for (int i=0; i<steps; i++) {
       float fTCurr = fTStart + (i+0.5)*fStep;
       vec3  vPos = vRayOrigin + vRayDir * fTCurr;
 
@@ -322,35 +333,62 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     // 0.50:   x--------------------x-------x--x-xx-x--x-------x-------------------------x
     // 0.75:   x-------------------x----------------x---------x---x-xx-x---x-------------x
     // 1.00:   x------------------x------------------x---------------x--------x---x--x-xxx
-    float sampleFocus;
-    // int stepCount;
-    int stepCount = $PRIMARY_RAY_STEPS;
+    float sampleFocus = -1;
 
-    if (bHitsSurface) {
-      sampleFocus = 1.0;
-    } else {
-      float tMostDense = dot(-vsIn.vRayOrigin, vRayDir) / dot(vRayDir, vRayDir);
-      if (tMostDense > tMin) {
-        sampleFocus = (tMostDense - tMin) / (tMax - tMin);
-      } else {
-        sampleFocus = 0.0;
+    {
+      // vec4 pathOpticalDepth = vec4(0.0);
+      // float stepLength = (tMax-tMin) / $QUALITY;
+      // for(int i=0; i<$QUALITY; ++i) {
+      //   float t = 1.0 * i / $QUALITY + tMin;
+      //   pathOpticalDepth += GetOpticalDepths(vsIn.vRayOrigin + t * vRayDir, vRayDir, 0, stepLength);
+
+      //   vec3 extinction = GetExtinction(pathOpticalDepth);
+      //   if (all(lessThan(extinction, vec3(0.01)))) {
+      //     sampleFocus = (t - tMin) / (tMax - tMin);
+      //     break;
+      //   }
+      // }
+
+      if (sampleFocus < 0) {
+        if (bHitsSurface) {
+          sampleFocus = 1.0;
+        } else {
+          float tMostDense = dot(-vsIn.vRayOrigin, vRayDir) / dot(vRayDir, vRayDir);
+          if (tMostDense > tMin) {
+            sampleFocus = (tMostDense - tMin) / (tMax - tMin);
+          } else {
+            sampleFocus = 0.0;
+          }
+        }
       }
     }
 
-    oColor = vec3(0.0);
+    //if (bHitsSurface) {
+    //  sampleFocus = 1.0;
+    //} else {
+    //  float tMostDense = dot(-vsIn.vRayOrigin, vRayDir) / dot(vRayDir, vRayDir);
+    //  if (tMostDense > tMin) {
+    //    sampleFocus = (tMostDense - tMin) / (tMax - tMin);
+    //  } else {
+    //    sampleFocus = 0.0;
+    //  }
+    //}
 
+    oColor = vec3(0.0);
     vec4 pathOpticalDepth = vec4(0.0);
 
-    for(int i=0; i<stepCount; ++i) {
-      float tSegmentStart = getT(i, stepCount, sampleFocus, tMin, tMax);
-      float tSegmentEnd   = getT(i+1, stepCount, sampleFocus, tMin, tMax);
+    for(int i=0; i<$QUALITY; ++i) {
+      float tSegmentStart = getT(i, $QUALITY, sampleFocus, tMin, tMax);
+      float tSegmentEnd   = getT(i+1, $QUALITY, sampleFocus, tMin, tMax);
       float stepLength    = tSegmentEnd - tSegmentStart;
       
       vec3 vBegin = vsIn.vRayOrigin + tSegmentStart * vRayDir;
       vec3 vMid = vsIn.vRayOrigin + (tSegmentStart + tSegmentEnd) * 0.5 * vRayDir;
       vec3 vEnd = vsIn.vRayOrigin + tSegmentEnd * vRayDir;
 
-      pathOpticalDepth += GetOpticalDepths(vBegin, vRayDir, 0, stepLength/2);
+      vec4 densities = GetDensities(vMid) * uBaseDensities;
+
+      pathOpticalDepth += densities * stepLength/2;
 
       float t1 = 0;
       float t2 = 0;
@@ -360,16 +398,15 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
 
       vec4 vOpticalDepthToSun = GetOpticalDepths(vMid, uSunDir, 0, t2);
 
-      vec3 totalExtinction = GetExtinction(vOpticalDepthToSun+pathOpticalDepth);
+      vec3 extinction = GetExtinction(vOpticalDepthToSun+pathOpticalDepth);
 
-      vec4 densities = GetDensities(vMid) * uBaseDensities;
 
       for (int i=0; i<$ATMOSPHERE_COMPONENTS; ++i) {
-        oColor += stepLength * totalExtinction *
+        oColor += stepLength * extinction *
                   densities[i] * GetBeta(uExtinctionMaps[i]) * GetPhase(uPhaseMaps[i], angle);
       }
 
-      pathOpticalDepth += GetOpticalDepths(vMid, vRayDir, 0, stepLength/2);
+      pathOpticalDepth += densities * stepLength/2;
     }
 
     oColor *= uSunIlluminance;
@@ -389,7 +426,7 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
     oColor += backgroundColor;
 
     //if (vsIn.vTexcoords.x > 0.5) {
-    //  oColor = heat(float(samples)/stepCount);
+    //  oColor = heat(float(samples)/$QUALITY);
     //}
   }
 )";
@@ -397,12 +434,9 @@ AtmosphereRenderer::AtmosphereRenderer(std::shared_ptr<Plugin::Settings> setting
   initData();
 
   // scene-wide settings -----------------------------------------------------
-  mPluginSettings->mQuality.connectAndTouch([this](int val) { setPrimaryRaySteps(val); });
+  mPluginSettings->mQuality.connectAndTouch([this](int val) { setQuality(val); });
 
   mPluginSettings->mEnableWater.connectAndTouch([this](bool val) { setDrawWater(val); });
-
-  mPluginSettings->mEnableRefraction.connectAndTouch(
-      [this](bool val) { setEnableRefraction(val); });
 
   mPluginSettings->mEnableClouds.connectAndTouch([this](bool val) {
     if (mUseClouds != val) {
@@ -477,28 +511,15 @@ float AtmosphereRenderer::getApproximateSceneBrightness() const {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-int AtmosphereRenderer::getPrimaryRaySteps() const {
-  return mPrimaryRaySteps;
+int AtmosphereRenderer::getQuality() const {
+  return mQuality;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void AtmosphereRenderer::setPrimaryRaySteps(int iValue) {
-  mPrimaryRaySteps = iValue;
-  mShaderDirty     = true;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-int AtmosphereRenderer::getSecondaryRaySteps() const {
-  return mSecondaryRaySteps;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void AtmosphereRenderer::setSecondaryRaySteps(int iValue) {
-  mSecondaryRaySteps = iValue;
-  mShaderDirty       = true;
+void AtmosphereRenderer::setQuality(int iValue) {
+  mQuality     = iValue;
+  mShaderDirty = true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -529,19 +550,6 @@ void AtmosphereRenderer::setAtmosphereComponents(std::vector<AtmosphereComponent
 
   mComponents  = value;
   mShaderDirty = true;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-bool AtmosphereRenderer::getEnableRefraction() const {
-  return mEnableRefraction;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void AtmosphereRenderer::setEnableRefraction(bool bEnable) {
-  mEnableRefraction = bEnable;
-  mShaderDirty      = true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -589,10 +597,8 @@ void AtmosphereRenderer::updateShader() {
   std::string sVert(cAtmosphereVert);
   std::string sFrag(cAtmosphereFrag);
 
-  cs::utils::replaceString(sFrag, "$PRIMARY_RAY_STEPS", cs::utils::toString(mPrimaryRaySteps));
-  cs::utils::replaceString(sFrag, "$SECONDARY_RAY_STEPS", cs::utils::toString(mSecondaryRaySteps));
+  cs::utils::replaceString(sFrag, "$QUALITY", cs::utils::toString(mQuality));
   cs::utils::replaceString(sFrag, "$HEIGHT_ATMO", cs::utils::toString(mAtmosphereHeight));
-  cs::utils::replaceString(sFrag, "$ENABLE_REFRACTION", std::to_string(mEnableRefraction));
   cs::utils::replaceString(sFrag, "$ATMOSPHERE_COMPONENTS", std::to_string(mComponents.size()));
   cs::utils::replaceString(sFrag, "$BODY_RADIUS", std::to_string(mRadii[0]));
   // cs::utils::replaceString(sFrag, "$DRAW_WATER", std::to_string(mDrawWater));

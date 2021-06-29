@@ -14,7 +14,7 @@
      * @inheritDoc
      */
     init() {
-      CosmoScout.gui.initSlider("atmosphere.setQuality", 1, 30, 1, [7]);
+      CosmoScout.gui.initSlider("atmosphere.setQuality", 3, 30, 1, [10]);
       CosmoScout.gui.initSlider("atmosphere.setWaterLevel", -2, 2, 0.01, [0]);
     }
   }
