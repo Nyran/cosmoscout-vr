@@ -104,6 +104,20 @@ cmake -E copy_directory "%BUILD_DIR%/glew/extracted/glew-2.1.0/include"         
 cmake -E copy_directory "%BUILD_DIR%/glew/extracted/glew-2.1.0/lib/Release/x64" "%INSTALL_DIR%/lib"     || goto :error
 cmake -E copy_directory "%BUILD_DIR%/glew/extracted/glew-2.1.0/bin/Release/x64" "%INSTALL_DIR%/bin"     || goto :error
 
+rem tinyspline -----------------------------------------------------------------------------------------
+:tinyspline
+
+echo.
+echo Building and installing tinyspline ...
+echo.
+
+cmake -E make_directory "%BUILD_DIR%/tinyspline" && cd "%BUILD_DIR%/tinyspline"
+cmake %CMAKE_FLAGS% -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DCMAKE_INSTALL_PREFIX="%INSTALL_DIR%"^
+      -DTINYSPLINE_BUILD_TESTS=OFF -DTINYSPLINE_BUILD_DOCS=OFF -DTINYSPLINE_BUILD_EXAMPLES=OFF^
+      -DBUILD_SHARED_LIBS=On "%EXTERNALS_DIR%/tinyspline" || goto :error
+
+cmake --build . --config %BUILD_TYPE% --target install --parallel %NUMBER_OF_PROCESSORS% || goto :error
+
 rem  freeglut ---------------------------------------------------------------------------------------
 :freeglut
 

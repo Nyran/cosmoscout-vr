@@ -68,6 +68,18 @@ cmake -E make_directory "$INSTALL_DIR/share"
 cmake -E make_directory "$INSTALL_DIR/bin"
 cmake -E make_directory "$INSTALL_DIR/include"
 
+# tinyspline ---------------------------------------------------------------------------------------
+
+echo ""
+echo "Building and installing tinyspline ..."
+echo ""
+
+cmake -E make_directory "$BUILD_DIR/tinyspline" && cd "$BUILD_DIR/tinyspline"
+cmake "${CMAKE_FLAGS[@]}" -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" -DBUILD_SHARED_LIBS=On \
+      -DTINYSPLINE_BUILD_TESTS=OFF -DTINYSPLINE_BUILD_DOCS=OFF -DTINYSPLINE_BUILD_EXAMPLES=OFF \
+      -DCMAKE_BUILD_TYPE=$BUILD_TYPE "$EXTERNALS_DIR/tinyspline"
+cmake --build . --target install --parallel "$(nproc)"
+
 # glew ---------------------------------------------------------------------------------------------
 
 echo ""
