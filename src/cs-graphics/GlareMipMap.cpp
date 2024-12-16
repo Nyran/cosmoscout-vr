@@ -11,6 +11,8 @@
 #include "../cs-utils/filesystem.hpp"
 #include "logger.hpp"
 
+#include <glm/gtc/constants.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <glm/gtc/type_ptr.hpp>
@@ -114,6 +116,37 @@ void GlareMipMap::update(VistaTexture* hdrBufferComposite, HDRBuffer::GlareMode 
   if (mGlareProgram == 0 || glareMode != mLastGlareMode || glareQuality != mLastGlareQuality ||
       bicubicGlareFilter != mLastGlareBicubic) {
 
+
+      // Evalutes the normal distribution function for the given value.
+    auto getGaussWeight = [](float sigma, float value) {
+      return 1.0 / (sigma * std::sqrt(2.0 * glm::pi<double>())) *
+             std::exp(-0.5 * std::pow(value / sigma, 2));
+    };
+
+    const float NUM_GLARE_GAUSS_WEIGHTS_TO_BAKE = 2 * (glareQuality + 1) + 1;
+
+    std::string gauss_weight_const_memory_string =
+        "const float gauss_weights[" + std::to_string((int)(NUM_GLARE_GAUSS_WEIGHTS_TO_BAKE) ) + "] = {";
+
+    for (float i = 0; i < NUM_GLARE_GAUSS_WEIGHTS_TO_BAKE; ++i) {
+      float offset = i - std::floor(NUM_GLARE_GAUSS_WEIGHTS_TO_BAKE / 2);
+      float weight = getGaussWeight(1, offset);
+      gauss_weight_const_memory_string += std::to_string(weight);
+      if (NUM_GLARE_GAUSS_WEIGHTS_TO_BAKE != (i + 1)) {
+        gauss_weight_const_memory_string += ", ";
+      }
+      
+    }
+    gauss_weight_const_memory_string += "};";
+        
+    std::cout << gauss_weight_const_memory_string << std::endl;
+
+    /*
+    float getGauss(float sigma, float value) {
+      return 1.0 / (sigma * sqrt(2 * PI)) * exp(-0.5 * pow(value / sigma, 2));
+    }
+    */
+
     // Create the compute shader.
     std::string source = "#version 430\n";
     source += "#define NUM_MULTISAMPLES " + std::to_string(mHDRBufferSamples) + "\n";
@@ -129,6 +162,8 @@ void GlareMipMap::update(VistaTexture* hdrBufferComposite, HDRBuffer::GlareMode 
     if (bicubicGlareFilter) {
       source += "#define BICUBIC_GLARE_FILTER\n";
     }
+
+    source += gauss_weight_const_memory_string;
 
     std::string glareMipMapComputeShaderSource = source;
     glareMipMapComputeShaderSource +=

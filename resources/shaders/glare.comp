@@ -80,7 +80,7 @@ vec3 sampleHigherLevel(ivec2 pos) {
   }
   ivec2 texture_size_of_lod = textureSize(uInGlareMipMap, input_level);
 
-  vec2 normalized_sampling_pos = (pos_times_two + 0.5) / vec2(texture_size_of_lod);
+  vec2 normalized_sampling_pos = (pos_times_two + 1.0) / vec2(texture_size_of_lod);
 
   vec3 col = texture2D(uInGlareMipMap, normalized_sampling_pos, input_level).rgb;
 #endif
@@ -158,7 +158,11 @@ void main() {
 #ifdef GLAREMODE_SYMMETRIC_GAUSS
   for (float i = 0; i < samples; ++i) {
     float offset = i - floor(samples / 2);
+  #if 0
     float weight = getGauss(1, offset);
+  #else
+    float weight = gauss_weights[int(i)];
+  #endif
     totalWeight += weight;
 
     // If we are writing to level zero, we have to sample the input HDR buffer. For all
